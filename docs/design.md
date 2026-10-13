@@ -80,7 +80,14 @@ Each skill copy is its own entry (normalized path and scope). Usage is also aggr
 - Confirm stored events contain metadata only.
 - Confirm recorder failures never block Copilot work and that the report labels zero-load skills conservatively.
 
+## Verified payload shapes (captured 2026-10-13)
+
+- `read_file` `PostToolUse`: `tool_input.filePath`; events carry `session_id`, `cwd`, ISO `timestamp`.
+- Subagent tool calls share the parent `session_id`, and a subagent's prompt arrives as its own `UserPromptSubmit`.
+- `SessionStart`: `source` (`new`), `model`, `session_id`, `cwd`.
+- Slash invocation: the prompt starts with `/<skill> ...`; the plugin form `/<plugin> <skill> ...` also occurs. After a slash invocation the agent reads the skill's `SKILL.md`, so one invocation produces both a `user-slash` and an `agent-read` record.
+
 ## Open items
 
-- Actual Local tool names and input shapes for reads and the Skill tool (verify from a captured event).
-- How a slash-command skill invocation appears in the `UserPromptSubmit` prompt text.
+- The Skill tool was not observed; its tool name and input key (`SKILL_TOOL_NAMES`, `SKILL_NAME_KEYS` in `tracker/detect.py`) are unverified defaults.
+- The report counts a `user-slash` load and the `agent-read` that follows it as two loads. How to report them (separately, or paired within a short window) is undecided.
