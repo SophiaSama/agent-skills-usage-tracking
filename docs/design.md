@@ -58,7 +58,7 @@ Each skill copy is its own entry (normalized path and scope). Usage is also aggr
 
 ## Architecture and data flow
 
-- A hook configuration under `~/.copilot/hooks/` runs a small recorder on `PostToolUse` and `UserPromptSubmit`.
+- A hook configuration under `~/.copilot/hooks/` runs a small recorder on `SessionStart`, `UserPromptSubmit`, and `PostToolUse`. `SessionStart` records a `session` event (timestamp, session ID, workspace folder name) so the report can count sessions that loaded no skill.
 - The recorder appends one compact JSON object per skill load to a local JSONL file under `~/.copilot/skill-usage/`. Fields: timestamp, session ID, workspace folder name only (not the full path), skill name, skill copy path (when known), load source. No prompts, tool responses, or skill contents are stored.
 - Events go to one file per month (`events-YYYY-MM.jsonl`); nothing is deleted automatically.
 - The report runs on demand only, as `python skill_usage.py report --days 30`, printing Markdown and optionally writing a CSV. There is no scheduled job or background process. It reads the event files and scans the inventory, then reports per skill copy and per skill name: loads by source, distinct sessions, last load, and not-observed skills.
