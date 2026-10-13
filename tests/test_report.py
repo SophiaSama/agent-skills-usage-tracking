@@ -81,12 +81,12 @@ class ReportTests(unittest.TestCase):
         summary = report.summarize(enough_events(), COPIES, NOW, 7)
         self.assertFalse(report.meets_threshold(summary, 30, 20))
 
-    def test_duplicate_names_list_every_copy(self):
+    def test_duplicate_names_are_one_line_each_without_paths(self):
         summary = report.summarize(enough_events(), COPIES, NOW, 30)
         text = report.render(summary, 30, 20)
         self.assertIn("## Duplicate names", text)
-        self.assertIn("/a/dup/SKILL.md (personal)", text)
-        self.assertIn("/b/dup/SKILL.md (plugin:m/p)", text)
+        self.assertIn("- dup (2 copies: personal, plugin:m/p)", text)
+        self.assertNotIn("/a/dup/SKILL.md", text)
 
     def test_loads_without_inventory_entry_are_unmatched(self):
         summary = report.summarize(enough_events(), COPIES, NOW, 30)
@@ -99,11 +99,13 @@ class ReportTests(unittest.TestCase):
             out = Path(tmp) / "r.csv"
             report.write_csv(summary, out, True)
             with open(out, newline="", encoding="utf-8") as fh:
-                status = {row["skill"]: row["status"] for row in csv.DictReader(fh)}
+                rows = {row["skill"]: row for row in csv.DictReader(fh)}
+        status = {name: row["status"] for name, row in rows.items()}
         self.assertEqual(
             status,
             {"used": "loaded", "idle": "review-candidate", "dup": "review-candidate", "ghost": "unmatched"},
         )
+        self.assertEqual(rows["dup"]["paths"], "/a/dup/SKILL.md;/b/dup/SKILL.md")
 
 
 if __name__ == "__main__":

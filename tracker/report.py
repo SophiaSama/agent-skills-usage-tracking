@@ -119,8 +119,7 @@ def render(summary, min_days, min_sessions):
     dupes = [r for r in summary.rows if len(r.copies) > 1]
     out += ["", "## Duplicate names", ""]
     for r in dupes:
-        out.append(f"- {r.name}")
-        out += [f"  - {c.path} ({c.source})" for c in r.copies]
+        out.append(f"- {r.name} ({len(r.copies)} copies: {_sources(r)})")
     if not dupes:
         out.append("None.")
 
@@ -134,7 +133,7 @@ def write_csv(summary, path, enough):
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["skill", "copies", "sources", "agent_read", "user_slash", "skill_tool", "total_loads", "sessions", "last_load", "status"]
+            ["skill", "copies", "sources", "paths", "agent_read", "user_slash", "skill_tool", "total_loads", "sessions", "last_load", "status"]
         )
         for r in summary.rows:
             if r.total:
@@ -146,6 +145,7 @@ def write_csv(summary, path, enough):
                     r.name,
                     len(r.copies),
                     ";".join(sorted({c.source for c in r.copies})),
+                    ";".join(c.path for c in r.copies),
                     r.counts["agent-read"],
                     r.counts["user-slash"],
                     r.counts["skill-tool"],

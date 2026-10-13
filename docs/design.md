@@ -54,7 +54,7 @@ Scan documented project locations `.github/skills/`, `.claude/skills/`, `.agents
 
 Also scan plugin-provided skills under `~/.copilot/installed-plugins/` and `~/.vscode/agent-plugins/`. Each skill copy carries a skill source tag: `project`, `personal`, or `plugin:<name>`.
 
-Each skill copy is its own entry (normalized path and scope). Usage is also aggregated by skill name so duplicate copies do not inflate the distinct-skill count. Duplicate names are flagged; no cross-location precedence is assumed. Loads that cannot be mapped to an inventory entry are kept as unmatched.
+Each skill copy is its own entry (normalized path and scope). Usage is also aggregated by skill name so duplicate copies do not inflate the distinct-skill count. Duplicate names are flagged in the Markdown report as one line per name with a copy count and sources; the CSV carries every copy path. No cross-location precedence is assumed. Loads that cannot be mapped to an inventory entry are kept as unmatched.
 
 ## Architecture and data flow
 
