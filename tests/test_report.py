@@ -33,6 +33,13 @@ def load(skill, source, sid, days_ago):
     }
 
 
+def load_at(skill, source, sid, seconds):
+    base = NOW - timedelta(days=1)
+    event = load(skill, source, sid, 0)
+    event["ts"] = (base + timedelta(seconds=seconds)).isoformat()
+    return event
+
+
 def session(sid, days_ago):
     return {"type": "session", "ts": ts(days_ago), "session_id": sid, "workspace": "w"}
 
@@ -49,6 +56,44 @@ def enough_events():
 
 
 class ReportTests(unittest.TestCase):
+    def test_slash_and_the_agent_read_that_follows_count_once(self):
+        events = [load_at("used", "user-slash", "s1", 0), load_at("used", "agent-read", "s1", 5)]
+        summary = report.summarize(events, COPIES, NOW, 30)
+        row = rows_by_name(summary)["used"]
+        self.assertEqual(row.counts, {"agent-read": 0, "user-slash": 1, "skill-tool": 0})
+        self.assertEqual(row.total, 1)
+        self.assertEqual(summary.merged, 1)
+        self.assertIn("merged into the slash load that triggered them", report.render(summary, 30, 20))
+
+    def test_read_after_the_pairing_window_is_counted_separately(self):
+        events = [load_at("used", "user-slash", "s1", 0), load_at("used", "agent-read", "s1", 121)]
+        row = rows_by_name(report.summarize(events, COPIES, NOW, 30))["used"]
+        self.assertEqual(row.counts["agent-read"], 1)
+
+    def test_read_in_another_session_or_for_another_skill_is_not_merged(self):
+        events = [
+            load_at("used", "user-slash", "s1", 0),
+            load_at("used", "agent-read", "s2", 5),
+            load_at("idle", "agent-read", "s1", 5),
+        ]
+        summary = report.summarize(events, COPIES, NOW, 30)
+        self.assertEqual(summary.merged, 0)
+        self.assertEqual(rows_by_name(summary)["used"].counts["agent-read"], 1)
+
+    def test_one_slash_absorbs_only_the_first_following_read(self):
+        events = [
+            load_at("used", "user-slash", "s1", 0),
+            load_at("used", "agent-read", "s1", 5),
+            load_at("used", "agent-read", "s1", 30),
+        ]
+        row = rows_by_name(report.summarize(events, COPIES, NOW, 30))["used"]
+        self.assertEqual(row.counts, {"agent-read": 1, "user-slash": 1, "skill-tool": 0})
+
+    def test_read_before_the_slash_is_not_merged(self):
+        events = [load_at("used", "agent-read", "s1", 0), load_at("used", "user-slash", "s1", 5)]
+        row = rows_by_name(report.summarize(events, COPIES, NOW, 30))["used"]
+        self.assertEqual(row.counts["agent-read"], 1)
+
     def test_counts_by_source_with_sessions_and_last_load(self):
         events = [
             load("used", "agent-read", "s1", 5),

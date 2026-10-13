@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 SOURCES = ("agent-read", "user-slash", "skill-tool")
+PAIR_SECONDS = 120
 
 
 def parse_ts(value):
@@ -38,6 +39,7 @@ class Summary:
     window_days: int
     sessions: set
     rows: list
+    merged: int = 0
 
 
 def summarize(events, copies, now, days):
@@ -55,11 +57,24 @@ def summarize(events, copies, now, days):
     by_name: dict[str, Row] = {}
     for copy in copies:
         by_name.setdefault(copy.name, Row(copy.name)).copies.append(copy)
-    for stamp, event in in_window:
+    pending: dict[tuple, list] = {}
+    merged = 0
+    for stamp, event in sorted(in_window, key=lambda pair: pair[0]):
         name = event.get("skill")
         source = event.get("source")
         if event.get("type") != "load" or not name or source not in SOURCES:
             continue
+        key = (event.get("session_id"), name)
+        if source == "user-slash":
+            pending.setdefault(key, []).append(stamp)
+        elif source == "agent-read":
+            # A slash command is followed by the agent reading the same SKILL.md; count that once.
+            waiting = pending.get(key, [])
+            hit = next((s for s in waiting if 0 <= (stamp - s).total_seconds() <= PAIR_SECONDS), None)
+            if hit is not None:
+                waiting.remove(hit)
+                merged += 1
+                continue
         row = by_name.setdefault(name, Row(name))
         row.counts[source] += 1
         if event.get("session_id"):
@@ -68,7 +83,7 @@ def summarize(events, copies, now, days):
             row.last = stamp
 
     rows = sorted(by_name.values(), key=lambda r: (-r.total, r.name))
-    return Summary(days, first, coverage_days, min(days, coverage_days), sessions, rows)
+    return Summary(days, first, coverage_days, min(days, coverage_days), sessions, rows, merged)
 
 
 def meets_threshold(summary, min_days, min_sessions):
@@ -98,6 +113,8 @@ def render(summary, min_days, min_sessions):
         )
 
     out += ["", "## Loads by skill", ""]
+    if summary.merged:
+        out += [f"{summary.merged} agent reads were merged into the slash load that triggered them.", ""]
     loaded = [r for r in summary.rows if r.total]
     if loaded:
         out.append("| Skill | Copies | agent-read | user-slash | skill-tool | Total | Sessions | Last load |")

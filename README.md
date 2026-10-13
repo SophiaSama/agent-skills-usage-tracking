@@ -9,7 +9,7 @@ Local-only tracker of which skills GitHub Copilot loads in VS Code Local session
 
 A skill is a review candidate only after at least 30 days and 20 sessions (`--min-days`, `--min-sessions`). Not observed does not mean unnecessary.
 
-A slash invocation such as `/grill-me` is followed by the agent reading the skill's `SKILL.md`, so it is currently counted as two loads (`user-slash` and `agent-read`).
+A slash invocation such as `/grill-me` is followed by the agent reading the skill's `SKILL.md`. The report merges that read into the slash load when it is in the same session within 120 seconds, so one invocation counts once. Raw events keep both records.
 
 ## Data
 

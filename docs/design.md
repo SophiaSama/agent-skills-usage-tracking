@@ -90,4 +90,7 @@ Each skill copy is its own entry (normalized path and scope). Usage is also aggr
 ## Open items
 
 - The Skill tool was not observed; its tool name and input key (`SKILL_TOOL_NAMES`, `SKILL_NAME_KEYS` in `tracker/detect.py`) are unverified defaults.
-- The report counts a `user-slash` load and the `agent-read` that follows it as two loads. How to report them (separately, or paired within a short window) is undecided.
+
+## Decisions after implementation
+
+- A `user-slash` load absorbs the first `agent-read` of the same skill in the same session within 120 seconds (`PAIR_SECONDS` in `tracker/report.py`). Raw events are unchanged; the report states how many reads were merged.
