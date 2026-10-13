@@ -114,6 +114,17 @@ class DetectTests(unittest.TestCase):
         rec = detect(tool_event("read_file", filePath=path, startLine=1, endLine=300), no_names)
         self.assertEqual((rec["skill"], rec["source"]), ("grill-me", "agent-read"))
 
+    def test_plugin_name_then_skill_name_slash_form(self):
+        prompt = "/mattpocock-skills grill-with-docs let's review this plan"
+        rec = detect(prompt_event(prompt), lambda: {"grill-with-docs"})
+        self.assertEqual((rec["skill"], rec["source"]), ("grill-with-docs", "user-slash"))
+
+    def test_first_token_wins_when_it_is_a_known_skill(self):
+        rec = detect(prompt_event("/grill-me tdd"), lambda: {"grill-me", "tdd"})
+        self.assertEqual(rec["skill"], "grill-me")
+
+    def test_second_token_is_ignored_when_first_is_not_a_skill(self):
+        self.assertIsNone(detect(prompt_event("/clear tdd"), lambda: {"grill-me"}))
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ PATH_KEYS = ("filePath", "file_path", "path")
 SKILL_NAME_KEYS = ("skill", "name")
 
 _NAME = r"[a-z0-9][a-z0-9-]*"
-SLASH_RE = re.compile(rf"^\s*/(?:({_NAME}):)?({_NAME})(?:\s|$)")
+SLASH_RE = re.compile(rf"^\s*/(?:({_NAME}):)?({_NAME})(?=\s|$)(?:\s+({_NAME})(?=\s|$))?")
 NAME_RE = re.compile(rf"^(?:{_NAME}:)?({_NAME})$")
 
 
@@ -71,10 +71,11 @@ def _from_prompt(event, known_names):
     match = SLASH_RE.match(prompt)
     if not match:
         return None
-    name = match.group(2)
-    if name not in known_names():
-        return None
-    return _record(event, "load", skill=name, path="", source="user-slash")
+    names = known_names()
+    for name in (match.group(2), match.group(3)):
+        if name and name in names:
+            return _record(event, "load", skill=name, path="", source="user-slash")
+    return None
 
 
 def detect(event, known_names):
