@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import hook
 from tracker import store
@@ -72,6 +73,36 @@ class HookTests(unittest.TestCase):
             log = (base / "hook-errors.log").read_text(encoding="utf-8")
             self.assertIn("JSONDecodeError", log)
             self.assertNotIn("topsecret", log)
+
+    def test_main_returns_zero_when_stdin_is_unreadable(self):
+        fake = mock.Mock()
+        fake.buffer.read.side_effect = OSError("closed")
+        with mock.patch("sys.stdin", fake):
+            self.assertEqual(hook.main(), 0)
+
+    def test_unresolvable_data_dir_is_swallowed(self):
+        with mock.patch("tracker.store.default_data_dir", side_effect=RuntimeError("no home")):
+            hook.run(payload(hook_event_name="SessionStart"))
+
+    def test_irrelevant_tool_payload_is_not_parsed(self):
+        raw = payload(hook_event_name="PostToolUse", tool_name="run_in_terminal", tool_input={"command": "ls"})
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("hook.json.loads") as loads:
+            hook.run(raw, data_dir=Path(tmp) / "data", home=Path(tmp))
+            loads.assert_not_called()
+
+    def test_prompt_mentioning_post_tool_use_is_still_parsed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "data"
+            make_skill(Path(tmp), "home", ".agents", "skills", "tdd")
+            raw = payload(hook_event_name="UserPromptSubmit", prompt="/tdd explain PostToolUse")
+            hook.run(raw, data_dir=base, home=Path(tmp) / "home")
+            self.assertEqual([e["skill"] for e in store.read_events(base)], ["tdd"])
+
+    def test_utf8_bom_payload_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "data"
+            hook.run(b"\xef\xbb\xbf" + payload(hook_event_name="SessionStart"), data_dir=base, home=Path(tmp))
+            self.assertEqual([e["type"] for e in store.read_events(base)], ["session"])
 
 
 if __name__ == "__main__":

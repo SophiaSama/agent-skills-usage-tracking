@@ -1,9 +1,18 @@
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tracker import detect, inventory, store
+
+_POST_TOOL_USE = re.compile(rb'"hook_event_name"\s*:\s*"PostToolUse"')
+_SKILL_HINT = re.compile(rb"skill", re.IGNORECASE)
+
+
+def _worth_parsing(raw):
+    # Ordinary tool calls never mention a skill, so skip decoding their (possibly huge) payloads.
+    return _POST_TOOL_USE.search(raw) is None or _SKILL_HINT.search(raw) is not None
 
 
 def _log_error(base, exc):
@@ -17,9 +26,14 @@ def _log_error(base, exc):
 
 
 def run(raw, data_dir=None, home=None):
-    base = data_dir or store.default_data_dir()
     try:
-        event = json.loads(raw.decode("utf-8"))
+        base = data_dir or store.default_data_dir()
+    except Exception:
+        return
+    try:
+        if not _worth_parsing(raw):
+            return
+        event = json.loads(raw.decode("utf-8-sig"))
         if not isinstance(event, dict):
             return
         cwd = event.get("cwd")
@@ -36,7 +50,10 @@ def run(raw, data_dir=None, home=None):
 
 
 def main():
-    run(sys.stdin.buffer.read())
+    try:
+        run(sys.stdin.buffer.read())
+    except BaseException:
+        pass
     return 0
 
 
