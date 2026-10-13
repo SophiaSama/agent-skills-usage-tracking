@@ -31,7 +31,7 @@ def read_events(data_dir: Path | None = None) -> list[dict]:
     if not base.is_dir():
         return events
     for path in sorted(base.glob("events-*.jsonl")):
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 try:
                     obj = json.loads(line)

@@ -25,6 +25,14 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["type"], "session")
 
+    def test_undecodable_bytes_do_not_abort_the_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "events-2026-10.jsonl").write_bytes(
+                b'\xff\xfe broken\n{"type":"session","ts":"2026-10-01T00:00:00Z"}\n'
+            )
+            self.assertEqual([e["type"] for e in store.read_events(base)], ["session"])
+
     def test_missing_directory_reads_as_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(store.read_events(Path(tmp) / "nope"), [])
