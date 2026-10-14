@@ -43,6 +43,14 @@ class Summary:
 
 
 def summarize(events, copies, now, days):
+    return _summarize(events, copies, now, days)
+
+
+def summarize_all(events, copies, now):
+    return _summarize(events, copies, now, None)
+
+
+def _summarize(events, copies, now, days):
     timed = []
     for event in events:
         stamp = parse_ts(event.get("ts"))
@@ -50,8 +58,8 @@ def summarize(events, copies, now, days):
             timed.append((stamp, event))
     first = min((t for t, _ in timed), default=None)
     coverage_days = (now - first).days if first else 0
-    cutoff = now - timedelta(days=days)
-    in_window = [(t, e) for t, e in timed if t >= cutoff]
+    cutoff = now - timedelta(days=days) if days is not None else None
+    in_window = [(t, e) for t, e in timed if cutoff is None or t >= cutoff]
     sessions = {e["session_id"] for _, e in in_window if e.get("session_id")}
 
     by_name: dict[str, Row] = {}
@@ -83,7 +91,8 @@ def summarize(events, copies, now, days):
             row.last = stamp
 
     rows = sorted(by_name.values(), key=lambda r: (-r.total, r.name))
-    return Summary(days, first, coverage_days, min(days, coverage_days), sessions, rows, merged)
+    window_days = min(days, coverage_days) if days is not None else coverage_days
+    return Summary(days if days is not None else coverage_days, first, coverage_days, window_days, sessions, rows, merged)
 
 
 def meets_threshold(summary, min_days, min_sessions):

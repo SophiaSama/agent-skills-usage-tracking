@@ -1,3 +1,10 @@
+# local metadata
 data/
 capture/
 __pycache__/
+# project skills used for development
+.github/
+# brainstorm
+.superpowers/
+# local output
+skill-usage-dashboard.html

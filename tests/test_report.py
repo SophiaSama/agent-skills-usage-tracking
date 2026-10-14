@@ -106,6 +106,24 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(row.sessions, {"s1", "s2"})
         self.assertEqual(row.last, NOW - timedelta(days=4))
 
+    def test_all_history_includes_old_loads_and_preserves_pairing(self):
+        events = [
+            load("used", "user-slash", "s1", 40),
+            load("used", "agent-read", "s1", 40),
+            load("used", "skill-tool", "s2", 35),
+            {**load("used", "agent-read", "s3", 50), "ts": "invalid"},
+        ]
+
+        history = report.summarize_all(events, COPIES, NOW)
+        history_row = rows_by_name(history)["used"]
+        self.assertEqual(history_row.counts, {"agent-read": 0, "user-slash": 1, "skill-tool": 1})
+        self.assertEqual(history_row.sessions, {"s1", "s2"})
+        self.assertEqual(history_row.last, NOW - timedelta(days=35))
+        self.assertEqual(history.merged, 1)
+
+        recent = report.summarize(events, COPIES, NOW, 30)
+        self.assertEqual(rows_by_name(recent)["used"].total, 0)
+
     def test_insufficient_data_is_not_called_review_candidate(self):
         events = [session("s1", 3), load("used", "agent-read", "s1", 2)]
         summary = report.summarize(events, COPIES, NOW, 30)

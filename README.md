@@ -6,6 +6,10 @@ Local-only tracker of which skills GitHub Copilot loads in VS Code Local session
 
     py -3.12 skill_usage.py report --days 30
     py -3.12 skill_usage.py report --days 90 --csv report.csv --workspace D:\projects\pkg\mc_sw
+    py -3.12 skill_usage.py dashboard
+    py -3.12 skill_usage.py dashboard --data-dir data --workspace D:\projects\pkg\mc_sw --output dashboard.html
+
+The dashboard writes a standalone HTML snapshot (`skill-usage-dashboard.html` in the current directory by default). Open it directly in a browser; it needs no server, network connection, or external assets. `--workspace` can be repeated to add project skill roots, `--data-dir` selects the event directory, and `--output` selects the HTML path. The dashboard contains skill names and aggregate usage metadata, not skill contents or filesystem paths. Inventory reflects the time the dashboard is generated; “not observed” is not evidence that a skill is unnecessary, and an unmatched load only means there is no current inventory match.
 
 A skill is a review candidate only after at least 30 days and 20 sessions (`--min-days`, `--min-sessions`). Not observed does not mean unnecessary.
 
