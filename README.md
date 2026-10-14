@@ -17,7 +17,7 @@ The dashboard writes a local standalone HTML snapshot (`skill-usage-dashboard.ht
 A slash invocation of a skill such as `/grill-me` is followed by the agent reading the skill's `SKILL.md`. The report merges that read into the slash load when it is in the same session within 120 seconds, so one invocation counts once. Raw events keep both records.
 
 ## Dashboard
-![dashboard example](.\assets\Dashboard_Screenshot.png)
+![dashboard example](./assets/Dashboard_Screenshot.png)
 
 ## Data
 
