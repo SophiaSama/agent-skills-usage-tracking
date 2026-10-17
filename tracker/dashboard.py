@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from tracker import report
+from tracker import inventory, report
+
+DASHBOARD_AGENTS = ("all",) + inventory.ALL_AGENTS
 
 
 def _range_data(summary):
@@ -8,11 +10,14 @@ def _range_data(summary):
     unmatched = []
     for row in summary.rows:
         if row.copies:
+            copy_agents = sorted({ag for copy in row.copies for ag in getattr(copy, "agents", ("copilot",))})
             skills.append(
                 {
                     "name": row.name,
                     "copyCount": len(row.copies),
                     "sources": sorted({copy.source for copy in row.copies}),
+                    "agents": copy_agents,
+                    "loadedAgents": sorted(row.agents),
                     "counts": dict(row.counts),
                     "total": row.total,
                     "sessions": len(row.sessions),
@@ -44,13 +49,17 @@ def _range_data(summary):
 
 
 def build_dashboard_data(events, copies, now):
-    recent = report.summarize(events, copies, now, 30)
-    history = report.summarize_all(events, copies, now)
-    return {
-        "ranges": {
+    agents_data = {}
+    for ag in DASHBOARD_AGENTS:
+        recent = report.summarize(events, copies, now, 30, agent=ag)
+        history = report.summarize_all(events, copies, now, agent=ag)
+        agents_data[ag] = {
             "30d": _range_data(recent),
             "all": _range_data(history),
         }
+    return {
+        "ranges": agents_data["all"],
+        "agents": agents_data,
     }
 
 
@@ -81,11 +90,14 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <header><div class="eyebrow">Local snapshot</div><h1>Copilot Skill Usage</h1>
 <p class="lede">Observed skill-load metadata alongside the inventory scanned when this dashboard was generated.</p></header>
 <div class="toolbar">
+<div class="control-group" id="agent-control" role="group" aria-label="Agent">
+<span class="control-label">Agent</span><button type="button" data-agent="all" aria-pressed="true">All agents</button><button type="button" data-agent="copilot" aria-pressed="false">Copilot</button><button type="button" data-agent="claude" aria-pressed="false">Claude</button><button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button><button type="button" data-agent="pi" aria-pressed="false">Pi Agent</button><button type="button" data-agent="hermes" aria-pressed="false">Hermes Agent</button>
+</div>
 <div class="control-group" id="range-control" role="group" aria-label="Time range">
 <span class="control-label">Time range</span><button type="button" data-range="30d" aria-pressed="true">Last 30 days</button><button type="button" data-range="all" aria-pressed="false">All recorded history</button>
 </div>
 <div class="control-group" id="filter-control" role="group" aria-label="Skill filter">
-<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
+<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="non-builtin" aria-pressed="false">Exclude built-in</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
 </div></div>
 <section class="cards" aria-label="Summary">
 <div class="card"><span>Installed skills</span><strong id="installed-count">0</strong></div><div class="card"><span>Recorded loads</span><strong id="load-count">0</strong></div><div class="card"><span>Observed skills</span><strong id="observed-count">0</strong></div><div class="card"><span>Not observed</span><strong id="not-observed-count">0</strong></div></section>
@@ -106,6 +118,7 @@ _HTML_SUFFIX = '''</script>
 "use strict";
 const dashboardData = JSON.parse(document.getElementById("dashboard-data").textContent);
 const sourceOrder = ["agent-read", "user-slash", "skill-tool"];
+let selectedAgent = "all";
 let selectedRange = "30d";
 let selectedFilter = "all";
 
@@ -122,7 +135,8 @@ function cell(row, value, className) {
 }
 
 function render() {
-    const view = dashboardData.ranges[selectedRange];
+    const agentRanges = (dashboardData.agents && dashboardData.agents[selectedAgent]) || dashboardData.ranges;
+    const view = agentRanges[selectedRange];
     const summary = view.summary;
     document.getElementById("installed-count").textContent = summary.installedSkills;
     document.getElementById("load-count").textContent = summary.recordedLoads;
@@ -133,6 +147,7 @@ function render() {
 
     const skills = selectedFilter === "observed" ? view.skills.filter(skill => skill.observed)
         : selectedFilter === "not-observed" ? view.skills.filter(skill => !skill.observed)
+        : selectedFilter === "non-builtin" ? view.skills.filter(skill => !skill.sources.every(s => s.startsWith("builtin:")))
         : selectedFilter === "unmatched" ? [] : view.skills;
     const chart = document.getElementById("chart");
     chart.replaceChildren();
@@ -189,6 +204,13 @@ function render() {
     document.getElementById("empty-unmatched").hidden = view.unmatched.length > 0;
 }
 
+for (const button of document.querySelectorAll("[data-agent]")) {
+    button.addEventListener("click", () => {
+        selectedAgent = button.dataset.agent;
+        document.querySelectorAll("[data-agent]").forEach(item => item.setAttribute("aria-pressed", String(item === button)));
+        render();
+    });
+}
 for (const button of document.querySelectorAll("[data-range]")) {
     button.addEventListener("click", () => {
         selectedRange = button.dataset.range;

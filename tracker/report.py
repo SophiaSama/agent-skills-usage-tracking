@@ -6,6 +6,19 @@ from datetime import datetime, timedelta, timezone
 
 SOURCES = ("agent-read", "user-slash", "skill-tool")
 PAIR_SECONDS = 120
+AGENT_LABELS = {
+    "all": "All agents",
+    "copilot": "Copilot",
+    "claude": "Claude",
+    "antigravity": "Antigravity",
+    "pi": "Pi Agent",
+    "hermes": "Hermes Agent",
+}
+
+
+def event_agent(event: dict) -> str:
+    val = event.get("agent") if isinstance(event, dict) else None
+    return str(val) if isinstance(val, str) and val else "copilot"
 
 
 def parse_ts(value):
@@ -25,6 +38,8 @@ class Row:
     counts: dict = field(default_factory=lambda: {s: 0 for s in SOURCES})
     sessions: set = field(default_factory=set)
     last: datetime | None = None
+    agents: set = field(default_factory=set)
+    by_agent: dict = field(default_factory=dict)
 
     @property
     def total(self):
@@ -40,17 +55,23 @@ class Summary:
     sessions: set
     rows: list
     merged: int = 0
+    agent: str | None = None
+    by_agent: dict = field(default_factory=dict)
 
 
-def summarize(events, copies, now, days):
-    return _summarize(events, copies, now, days)
+def summarize(events, copies, now, days, agent: str | None = None):
+    return _summarize(events, copies, now, days, agent=agent)
 
 
-def summarize_all(events, copies, now):
-    return _summarize(events, copies, now, None)
+def summarize_all(events, copies, now, agent: str | None = None):
+    return _summarize(events, copies, now, None, agent=agent)
 
 
-def _summarize(events, copies, now, days):
+def _summarize(events, copies, now, days, agent: str | None = None):
+    if agent is not None and agent != "all":
+        events = [e for e in events if event_agent(e) == agent]
+        copies = [c for c in copies if agent in getattr(c, "agents", ("copilot",))]
+
     timed = []
     for event in events:
         stamp = parse_ts(event.get("ts"))
@@ -67,11 +88,13 @@ def _summarize(events, copies, now, days):
         by_name.setdefault(copy.name, Row(copy.name)).copies.append(copy)
     pending: dict[tuple, list] = {}
     merged = 0
+    by_agent: dict[str, int] = {}
     for stamp, event in sorted(in_window, key=lambda pair: pair[0]):
         name = event.get("skill")
         source = event.get("source")
         if event.get("type") != "load" or not name or source not in SOURCES:
             continue
+        ag = event_agent(event)
         key = (event.get("session_id"), name)
         if source == "user-slash":
             pending.setdefault(key, []).append(stamp)
@@ -85,6 +108,9 @@ def _summarize(events, copies, now, days):
                 continue
         row = by_name.setdefault(name, Row(name))
         row.counts[source] += 1
+        row.agents.add(ag)
+        row.by_agent[ag] = row.by_agent.get(ag, 0) + 1
+        by_agent[ag] = by_agent.get(ag, 0) + 1
         if event.get("session_id"):
             row.sessions.add(event["session_id"])
         if row.last is None or stamp > row.last:
@@ -92,7 +118,17 @@ def _summarize(events, copies, now, days):
 
     rows = sorted(by_name.values(), key=lambda r: (-r.total, r.name))
     window_days = min(days, coverage_days) if days is not None else coverage_days
-    return Summary(days if days is not None else coverage_days, first, coverage_days, window_days, sessions, rows, merged)
+    return Summary(
+        days if days is not None else coverage_days,
+        first,
+        coverage_days,
+        window_days,
+        sessions,
+        rows,
+        merged,
+        agent=agent,
+        by_agent=by_agent,
+    )
 
 
 def meets_threshold(summary, min_days, min_sessions):
@@ -106,13 +142,23 @@ def _sources(row):
 def render(summary, min_days, min_sessions):
     enough = meets_threshold(summary, min_days, min_sessions)
     started = summary.first.date().isoformat() if summary.first else "no events recorded yet"
+    title_agent = (
+        AGENT_LABELS.get(summary.agent, summary.agent)
+        if summary.agent and summary.agent not in ("all", "copilot")
+        else "Copilot"
+    )
     out = [
-        "# Copilot skill load report",
+        f"# {title_agent} skill load report",
         "",
         f"- Window: last {summary.days} days (tracking started: {started})",
         f"- Coverage in window: {summary.window_days} days, {len(summary.sessions)} sessions",
         "- Covers only sessions recorded after the hook was installed; inventory reflects today, not past availability.",
     ]
+    if summary.by_agent and (len(summary.by_agent) > 1 or set(summary.by_agent) != {"copilot"}):
+        breakdown = ", ".join(
+            f"{AGENT_LABELS.get(ag, ag)}: {cnt}" for ag, cnt in sorted(summary.by_agent.items())
+        )
+        out.append(f"- Loads by agent: {breakdown}")
     if enough:
         out.append(f"- Coverage meets the review threshold ({min_days} days, {min_sessions} sessions).")
     else:

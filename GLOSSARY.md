@@ -13,15 +13,15 @@ One physical `SKILL.md` folder at a specific path. The same skill name can have 
 _Avoid_: Duplicate, install
 
 **Skill load**:
-A recorded event where a skill's instructions entered a Copilot session, by any load source.
+A recorded event where a skill's instructions entered an agent session (Copilot, Antigravity, Pi Agent, or Hermes Agent), by any load source.
 _Avoid_: Use, usage, invocation, consultation, read
 
 **Skill source**:
-Where a skill copy comes from: `project`, `personal`, or `plugin:<name>`.
+Where a skill copy comes from: `project`, `personal`, `plugin:<name>`, or `builtin:<agent>`.
 _Avoid_: Origin, provider
 
 **Load source**:
-How a skill load happened: `agent-read` (agent read its `SKILL.md`), `user-slash` (user typed its slash command), or `skill-tool` (Skill tool call).
+How a skill load happened: `agent-read` (agent read its `SKILL.md`), `user-slash` (user typed its slash command), or `skill-tool` (`Skill` or `skill_view` tool call).
 _Avoid_: Trigger, origin
 
 **Not observed**:
