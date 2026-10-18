@@ -64,14 +64,29 @@ def _iterdir(path: Path) -> list[Path]:
         return []
 
 
+def _find_skill_filename(filenames) -> str | None:
+    if "SKILL.md" in filenames:
+        return "SKILL.md"
+    for fn in filenames:
+        if fn.lower() == "skill.md":
+            return fn
+    return None
+
+
 def _flat(root: Path, source: str, agents: tuple[str, ...] = ("copilot",)) -> list[SkillCopy]:
     copies: list[SkillCopy] = []
     if not _is_dir(root):
         return copies
     for entry in _iterdir(root):
+        if not _is_dir(entry):
+            continue
         skill_file = entry / "SKILL.md"
-        if _is_dir(entry) and _is_file(skill_file):
-            copies.append(SkillCopy(entry.name, os.path.normpath(str(skill_file)), source, agents))
+        if not _is_file(skill_file):
+            matched = next((p for p in _iterdir(entry) if p.name.lower() == "skill.md" and _is_file(p)), None)
+            if matched is None:
+                continue
+            skill_file = matched
+        copies.append(SkillCopy(entry.name, os.path.normpath(str(skill_file)), source, agents))
     return copies
 
 
@@ -81,8 +96,9 @@ def _walk_skills(root: Path, source: str, agents: tuple[str, ...]) -> list[Skill
         return copies
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-        if "SKILL.md" in filenames and Path(dirpath) != root:
-            path = os.path.normpath(os.path.join(dirpath, "SKILL.md"))
+        skill_fn = _find_skill_filename(filenames)
+        if skill_fn and Path(dirpath) != root:
+            path = os.path.normpath(os.path.join(dirpath, skill_fn))
             copies.append(SkillCopy(Path(dirpath).name, path, source, agents))
             dirnames[:] = [d for d in dirnames if d not in SUPPORT_DIRS]
     return copies
@@ -94,12 +110,13 @@ def _plugin_store(store: Path, agents: tuple[str, ...] = ("copilot",)) -> list[S
         return copies
     for dirpath, dirnames, filenames in os.walk(store):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
-        if "SKILL.md" not in filenames:
+        skill_fn = _find_skill_filename(filenames)
+        if not skill_fn:
             continue
         rel = Path(dirpath).relative_to(store).parts
         if len(rel) < 2 or rel[0].startswith("."):
             continue
-        path = os.path.normpath(os.path.join(dirpath, "SKILL.md"))
+        path = os.path.normpath(os.path.join(dirpath, skill_fn))
         copies.append(SkillCopy(Path(dirpath).name, path, f"plugin:{rel[0]}/{rel[1]}", agents))
         dirnames[:] = []
     return copies
@@ -124,13 +141,14 @@ def _pi_package_store(pi_agent_dir: Path) -> list[SkillCopy]:
     if _is_dir(git_store):
         for dirpath, dirnames, filenames in os.walk(git_store):
             dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-            if "SKILL.md" not in filenames:
+            skill_fn = _find_skill_filename(filenames)
+            if not skill_fn:
                 continue
             rel = Path(dirpath).relative_to(git_store).parts
             if len(rel) < 4:
                 continue
             pkg_label = f"{rel[1]}/{rel[2]}" if len(rel) >= 3 else rel[0]
-            path = os.path.normpath(os.path.join(dirpath, "SKILL.md"))
+            path = os.path.normpath(os.path.join(dirpath, skill_fn))
             copies.append(SkillCopy(Path(dirpath).name, path, f"plugin:pi/{pkg_label}", ("pi",)))
             dirnames[:] = []
     npm_store = pi_agent_dir / "npm"
@@ -212,11 +230,12 @@ def _hermes_skills(root: Path) -> list[SkillCopy]:
             pass
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-        if "SKILL.md" not in filenames or Path(dirpath) == root:
+        skill_fn = _find_skill_filename(filenames)
+        if not skill_fn or Path(dirpath) == root:
             continue
         skill_name = Path(dirpath).name
         source = "builtin:hermes" if skill_name in bundled else "personal"
-        path = os.path.normpath(os.path.join(dirpath, "SKILL.md"))
+        path = os.path.normpath(os.path.join(dirpath, skill_fn))
         copies.append(SkillCopy(skill_name, path, source, ("hermes",)))
         dirnames[:] = []
     return copies

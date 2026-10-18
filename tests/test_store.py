@@ -37,6 +37,14 @@ class StoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(store.read_events(Path(tmp) / "nope"), [])
 
+    def test_default_data_dir_expands_tilde(self):
+        from unittest import mock
+
+        with mock.patch.dict("os.environ", {"SKILL_USAGE_DATA": "~/custom-skill-data"}):
+            resolved = store.default_data_dir()
+            self.assertNotIn("~", str(resolved))
+            self.assertTrue(str(resolved).endswith("custom-skill-data"))
+
 
 if __name__ == "__main__":
     unittest.main()

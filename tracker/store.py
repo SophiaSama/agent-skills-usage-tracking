@@ -12,7 +12,7 @@ _MONTH = re.compile(r"^\d{4}-\d{2}")
 def default_data_dir() -> Path:
     override = os.environ.get("SKILL_USAGE_DATA")
     if override:
-        return Path(override)
+        return Path(os.path.expanduser(override)).resolve()
     return Path.home() / ".copilot" / "skill-usage" / "data"
 
 

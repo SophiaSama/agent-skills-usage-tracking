@@ -243,6 +243,17 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                             for part in content:
                                 if not isinstance(part, dict) or part.get("type") != "toolCall":
                                     continue
+                                raw_args = part.get("arguments")
+                                if isinstance(raw_args, str):
+                                    try:
+                                        parsed_args = json.loads(raw_args)
+                                        args_dict = parsed_args if isinstance(parsed_args, dict) else {}
+                                    except (ValueError, TypeError):
+                                        args_dict = {}
+                                elif isinstance(raw_args, dict):
+                                    args_dict = raw_args
+                                else:
+                                    args_dict = {}
                                 syn = {
                                     "hook_event_name": "PostToolUse",
                                     "timestamp": ts,
@@ -250,7 +261,7 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                                     "cwd": cwd,
                                     "agent": "pi",
                                     "tool_name": part.get("name"),
-                                    "tool_input": part.get("arguments") if isinstance(part.get("arguments"), dict) else {},
+                                    "tool_input": args_dict,
                                 }
                                 rec = detect.detect(syn, lambda: known_names)
                                 if rec:
@@ -677,6 +688,7 @@ def install_hooks(
         config_dir = resolved_home / ".gemini" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         hooks_path = config_dir / "hooks.json"
+        antigravity_cmd = f"{cmd} --agent antigravity"
         hooks_data: dict = {}
         if hooks_path.is_file():
             try:
@@ -687,11 +699,11 @@ def install_hooks(
                 hooks_data = {}
         hooks_data["skill-usage"] = {
             "enabled": True,
-            "PreInvocation": [{"type": "command", "command": cmd, "timeout": 5}],
+            "PreInvocation": [{"type": "command", "command": antigravity_cmd, "timeout": 5}],
             "PreToolUse": [
                 {
                     "matcher": "view_file",
-                    "hooks": [{"type": "command", "command": cmd, "timeout": 5}],
+                    "hooks": [{"type": "command", "command": antigravity_cmd, "timeout": 5}],
                 }
             ],
         }
@@ -790,6 +802,14 @@ def register(ctx) -> None:
     def on_session_start(session_id: str = "", **kwargs) -> None:
         _record({{"hook_event_name": "SessionStart", "session_id": str(session_id or "")}})
 
+    def on_user_prompt(prompt: str = "", session_id: str = "", **kwargs) -> None:
+        if isinstance(prompt, str) and prompt.strip().startswith("/"):
+            _record({{
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": str(session_id or ""),
+                "prompt": prompt,
+            }})
+
     def post_tool_call(tool_name: str = "", args: dict | None = None, session_id: str = "", **kwargs) -> None:
         if tool_name in ("skill_view", "read_file", "view_file", "read"):
             _record({{
@@ -801,6 +821,7 @@ def register(ctx) -> None:
 
     try:
         ctx.register_hook("on_session_start", on_session_start)
+        ctx.register_hook("on_user_prompt", on_user_prompt)
         ctx.register_hook("post_tool_call", post_tool_call)
     except Exception:
         pass

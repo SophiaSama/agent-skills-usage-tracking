@@ -142,11 +142,12 @@ def _sources(row):
 def render(summary, min_days, min_sessions):
     enough = meets_threshold(summary, min_days, min_sessions)
     started = summary.first.date().isoformat() if summary.first else "no events recorded yet"
-    title_agent = (
-        AGENT_LABELS.get(summary.agent, summary.agent)
-        if summary.agent and summary.agent not in ("all", "copilot")
-        else "Copilot"
-    )
+    if summary.agent == "all":
+        title_agent = "All agents"
+    elif summary.agent and summary.agent != "copilot":
+        title_agent = AGENT_LABELS.get(summary.agent, summary.agent)
+    else:
+        title_agent = "Copilot"
     out = [
         f"# {title_agent} skill load report",
         "",

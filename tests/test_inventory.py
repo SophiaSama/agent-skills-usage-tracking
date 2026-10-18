@@ -55,6 +55,18 @@ class InventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(inventory.scan(Path(tmp) / "nohome", [Path(tmp) / "nows"]), [])
 
+    def test_walk_skills_detects_lowercase_skill_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "workspace"
+            skill_dir = ws / "my-lowercase-skill"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "skill.md").write_text("# Skill\n", encoding="utf-8")
+
+            copies = inventory._walk_skills(ws, "project", ("copilot",))
+            matched = [c for c in copies if c.name == "my-lowercase-skill"]
+            self.assertEqual(len(matched), 1)
+            self.assertEqual(matched[0].source, "project")
+
 
 if __name__ == "__main__":
     unittest.main()

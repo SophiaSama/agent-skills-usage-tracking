@@ -103,6 +103,15 @@ class CliTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertIn(str(output), stderr.getvalue())
 
+    def test_cli_agent_flag_filtering(self):
+        with patch("tracker.report.render", return_value="") as mock_render, patch(
+            "tracker.store.read_events", return_value=[]
+        ), patch("tracker.inventory.scan", return_value=[]):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                skill_usage.main(["report", "--agent", "antigravity", "--no-sync"])
+            self.assertEqual(mock_render.call_args[0][0].agent, "antigravity")
+
 
 if __name__ == "__main__":
     unittest.main()

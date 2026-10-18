@@ -126,5 +126,41 @@ class DetectTests(unittest.TestCase):
     def test_second_token_is_ignored_when_first_is_not_a_skill(self):
         self.assertIsNone(detect(prompt_event("/clear tdd"), lambda: {"grill-me"}))
 
+    def test_antigravity_session_start_detection(self):
+        payload = {
+            "conversationId": "conv-antigravity-999",
+            "invocationNum": 1,
+            "workspacePaths": ["/Users/user/workspace/project-alpha"],
+            "timestamp": "2026-10-18T10:00:00Z",
+        }
+        rec = detect(payload, no_names)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["type"], "session")
+        self.assertEqual(rec["session_id"], "conv-antigravity-999")
+        self.assertEqual(rec["workspace"], "project-alpha")
+        self.assertEqual(rec["agent"], "antigravity")
+
+    def test_antigravity_subsequent_invocation_ignored(self):
+        payload = {
+            "conversationId": "conv-antigravity-999",
+            "invocationNum": 2,
+            "workspacePaths": ["/Users/user/workspace/project-alpha"],
+            "timestamp": "2026-10-18T10:01:00Z",
+        }
+        self.assertIsNone(detect(payload, no_names))
+
+    def test_pagination_filtering_across_casing_variants(self):
+        self.assertIsNone(detect(tool_event("read_file", filePath=SKILL, startLine=101), no_names))
+        self.assertIsNone(detect(tool_event("read_file", filePath=SKILL, start_line=201), no_names))
+        self.assertIsNone(detect(tool_event("view_file", AbsolutePath=SKILL, StartLine=51), no_names))
+        self.assertIsNone(detect(tool_event("read", path=SKILL, offset=500), no_names))
+
+    def test_claude_xml_command_prompt_normalization(self):
+        xml_prompt = "<command-name>/grill-me</command-name><command-args>plan this</command-args>"
+        rec = detect(prompt_event(xml_prompt), lambda: {"grill-me"})
+        self.assertIsNotNone(rec)
+        self.assertEqual((rec["skill"], rec["source"]), ("grill-me", "user-slash"))
+
+
 if __name__ == "__main__":
     unittest.main()

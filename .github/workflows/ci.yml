@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - '3.12'
+          - '3.13'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run standard library test suite
+        shell: bash
+        run: |
+          python -I -B -m unittest discover -s tests -t . -v
+
+      - name: Verify working tree cleanliness
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ] || [ -f "skill-usage-dashboard.html" ] || [ -d "data" ]; then
+            echo "Error: Working tree is dirty or generated default artifacts after running tests." >&2
+            git status --porcelain >&2
+            [ -f "skill-usage-dashboard.html" ] && echo "Found leaked file: skill-usage-dashboard.html" >&2
+            [ -d "data" ] && echo "Found leaked directory: data/" >&2
+            exit 1
+          fi
+
+      - name: Generate Job Summary
+        if: always()
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          RESULT="Failed :x:"
+          if [ "$JOB_STATUS" = "success" ]; then
+            RESULT="Passed :white_check_mark:"
+          fi
+          {
+            echo "### Test Execution Summary :rocket:"
+            echo "- **Python Version:** $PYTHON_VERSION"
+            echo "- **Runner OS:** ${{ runner.os }}"
+            echo "- **Test Command:** \`python -I -B -m unittest discover -s tests -t . -v\`"
+            echo "- **Result:** $RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"

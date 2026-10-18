@@ -265,15 +265,160 @@ class MultiAgentTests(unittest.TestCase):
                 with contextlib.redirect_stdout(buf):
                     code = skill_usage.main(["install-hooks"])
                 self.assertEqual(code, 0)
-                self.assertTrue((home / ".gemini/config/hooks.json").is_file())
+                hooks_json = (home / ".gemini/config/hooks.json").read_text(encoding="utf-8")
+                self.assertIn("--agent antigravity", hooks_json)
                 self.assertTrue((home / ".pi/agent/extensions/skill-usage.ts").is_file())
-                self.assertTrue((home / ".hermes/plugins/skill-usage/__init__.py").is_file())
+                hermes_plugin = (home / ".hermes/plugins/skill-usage/__init__.py").read_text(encoding="utf-8")
+                self.assertIn("on_user_prompt", hermes_plugin)
 
                 sync_buf = io.StringIO()
                 with contextlib.redirect_stdout(sync_buf):
                     code = skill_usage.main(["sync", "--data-dir", str(data_dir)])
                 self.assertEqual(code, 0)
                 self.assertIn("Synced 0 new events", sync_buf.getvalue())
+
+    def test_pi_sync_handles_json_string_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            session_dir = home / ".pi" / "agent" / "sessions" / "project"
+            session_dir.mkdir(parents=True)
+            session_file = session_dir / "session-1.jsonl"
+
+            log_line = json.dumps(
+                {
+                    "type": "message",
+                    "timestamp": "2026-10-18T12:00:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "toolCall",
+                                "name": "read",
+                                "arguments": json.dumps({"path": "/Users/user/.pi/agent/skills/analyzer/SKILL.md"}),
+                            }
+                        ],
+                    },
+                }
+            )
+            session_file.write_text(log_line + "\n", encoding="utf-8")
+
+            events = sync.collect_pi_events(home, {"analyzer"})
+            load_events = [e for e in events if e.get("type") == "load"]
+            self.assertEqual(len(load_events), 1)
+            self.assertEqual(load_events[0]["skill"], "analyzer")
+            self.assertEqual(load_events[0]["agent"], "pi")
+            self.assertEqual(load_events[0]["source"], "agent-read")
+
+    def test_inventory_scans_pi_npm_package_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            skill_dir = home / ".pi" / "agent" / "npm" / "agent-pack" / "skills" / "linter"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("# Linter Skill\n", encoding="utf-8")
+
+            copies = inventory.scan(home, [])
+            matched = [c for c in copies if c.name == "linter"]
+            self.assertEqual(len(matched), 1)
+            self.assertEqual(matched[0].source, "plugin:pi/agent-pack")
+            self.assertEqual(matched[0].agents, ("pi",))
+
+    def test_antigravity_ide_brain_synchronization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            log_dir = home / ".gemini" / "antigravity-ide" / "brain" / "conv-ide-42" / ".system_generated" / "logs"
+            log_dir.mkdir(parents=True)
+            transcript = log_dir / "transcript.jsonl"
+
+            entry = json.dumps(
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "created_at": "2026-10-18T08:00:00Z",
+                    "tool_calls": [
+                        {
+                            "name": "view_file",
+                            "args": {"AbsolutePath": "/Users/user/.gemini/config/skills/refactor/SKILL.md"},
+                        }
+                    ],
+                }
+            )
+            transcript.write_text(entry + "\n", encoding="utf-8")
+
+            events = sync.collect_antigravity_events(home, {"refactor"})
+            load_events = [e for e in events if e.get("type") == "load"]
+            self.assertEqual(len(load_events), 1)
+            self.assertEqual(load_events[0]["session_id"], "conv-ide-42")
+            self.assertEqual(load_events[0]["skill"], "refactor")
+            self.assertEqual(load_events[0]["agent"], "antigravity")
+
+    def test_claude_sync_and_plugin_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            plugin_install = home / ".claude" / "plugins" / "custom-pack"
+            (plugin_install / "skills" / "claude-pack-skill").mkdir(parents=True)
+            (plugin_install / "skills" / "claude-pack-skill" / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
+            manifest = home / ".claude" / "plugins" / "installed_plugins.json"
+            manifest.write_text(
+                json.dumps({"plugins": {"my-pack@latest": [{"installPath": str(plugin_install)}]}}),
+                encoding="utf-8",
+            )
+            cache_skill = home / ".claude" / "plugins" / "cache" / "market" / "cached-plug" / "1.0.0" / "skills" / "cached-skill"
+            cache_skill.mkdir(parents=True)
+            (cache_skill / "SKILL.md").write_text("# Cached\n", encoding="utf-8")
+
+            copies = inventory.scan(home, [], agent="claude")
+            by_name = {c.name: c.source for c in copies}
+            self.assertEqual(by_name.get("claude-pack-skill"), "plugin:claude/my-pack")
+            self.assertEqual(by_name.get("cached-skill"), "plugin:claude/cached-plug")
+
+            proj_dir = home / ".claude" / "projects" / "my-proj"
+            proj_dir.mkdir(parents=True)
+            transcript = proj_dir / "sess-claude-1.jsonl"
+            lines = [
+                json.dumps(
+                    {
+                        "sessionId": "sess-claude-1",
+                        "cwd": "/work/my-proj",
+                        "timestamp": "2026-10-18T09:00:00Z",
+                        "message": {"role": "user", "content": "<command-name>/cached-skill</command-name>"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "sessionId": "sess-claude-1",
+                        "cwd": "/work/my-proj",
+                        "timestamp": "2026-10-18T09:05:00Z",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Read",
+                                    "input": {"file_path": str(cache_skill / "SKILL.md")},
+                                }
+                            ],
+                        },
+                    }
+                ),
+            ]
+            transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            events = sync.collect_claude_events(home, {"cached-skill", "claude-pack-skill"})
+            loads = [e for e in events if e.get("type") == "load"]
+            self.assertEqual(len(loads), 2)
+            self.assertEqual({e["source"] for e in loads}, {"user-slash", "agent-read"})
+            self.assertEqual({e["agent"] for e in loads}, {"claude"})
+
+    def test_hermes_sqlite_locked_graceful_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            hermes_dir = home / ".hermes"
+            hermes_dir.mkdir(parents=True)
+            db_path = hermes_dir / "state.db"
+            db_path.touch()
+
+            with patch("sqlite3.connect", side_effect=sqlite3.OperationalError("database is locked")):
+                events = sync.collect_hermes_events(home, {"test-skill"})
+                self.assertEqual(events, [])
 
     def test_dashboard_includes_per_agent_views_and_controls(self):
         copies = [

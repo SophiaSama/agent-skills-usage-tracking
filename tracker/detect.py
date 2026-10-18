@@ -78,7 +78,7 @@ def _record(event, type_, **extra):
 
 
 def _is_paginated_continuation(data: dict) -> bool:
-    for key in ("StartLine", "offset"):
+    for key in ("StartLine", "startLine", "start_line", "offset", "Offset"):
         raw = data.get(key)
         if raw is None:
             continue

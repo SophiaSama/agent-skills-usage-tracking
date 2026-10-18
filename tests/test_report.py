@@ -170,6 +170,32 @@ class ReportTests(unittest.TestCase):
         )
         self.assertEqual(rows["dup"]["paths"], "/a/dup/SKILL.md;/b/dup/SKILL.md")
 
+    def test_report_render_multi_agent_breakdown(self):
+        first = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        last = datetime(2026, 10, 15, tzinfo=timezone.utc)
+        row = report.Row(
+            name="skill-a",
+            counts={"agent-read": 5, "user-slash": 0, "skill-tool": 0},
+            sessions={"s1", "s2", "s3"},
+            last=last,
+            agents={"copilot", "antigravity"},
+            by_agent={"copilot": 2, "antigravity": 3},
+        )
+        summary = report.Summary(
+            days=30,
+            first=first,
+            coverage_days=15,
+            window_days=15,
+            sessions={"s1", "s2", "s3"},
+            rows=[row],
+            merged=0,
+            agent="all",
+            by_agent={"copilot": 2, "antigravity": 3},
+        )
+        rendered = report.render(summary, min_days=10, min_sessions=2)
+        self.assertIn("# All agents skill load report", rendered)
+        self.assertIn("- Loads by agent: Antigravity: 3, Copilot: 2", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

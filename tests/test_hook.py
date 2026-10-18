@@ -104,6 +104,22 @@ class HookTests(unittest.TestCase):
             hook.run(b"\xef\xbb\xbf" + payload(hook_event_name="SessionStart"), data_dir=base, home=Path(tmp))
             self.assertEqual([e["type"] for e in store.read_events(base)], ["session"])
 
+    def test_hook_cli_agent_flag_parsing(self):
+        self.assertEqual(hook._parse_agent_arg(["--agent", "pi"]), "pi")
+        self.assertEqual(hook._parse_agent_arg(["--agent=hermes"]), "hermes")
+        self.assertIsNone(hook._parse_agent_arg([]))
+
+    def test_hook_main_antigravity_allow_fallback_on_corrupt_json(self):
+        raw_corrupt = b'{"conversationId": "conv-1", "toolCall": invalid_json_syntax...'
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"SKILL_USAGE_DATA": str(Path(tmp) / "data")}):
+                with mock.patch("sys.stdin.buffer.read", return_value=raw_corrupt), mock.patch(
+                    "sys.stdout.write"
+                ) as mock_stdout:
+                    code = hook.main([])
+                    self.assertEqual(code, 0)
+                    mock_stdout.assert_called_with('{"decision":"allow"}\n')
+
 
 if __name__ == "__main__":
     unittest.main()
