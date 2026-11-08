@@ -5,23 +5,34 @@ import re
 from datetime import datetime, timezone
 
 READ_TOOL_NAMES = {"read_file", "Read", "view", "readFile", "view_file", "read"}
+READ_TOOL_NAMES_LOWER = {t.lower() for t in READ_TOOL_NAMES}
 SKILL_TOOL_NAMES = {"Skill", "skill", "skill_view"}
-PATH_KEYS = ("filePath", "file_path", "path", "AbsolutePath")
-SKILL_NAME_KEYS = ("skill", "name")
+SKILL_TOOL_NAMES_LOWER = {t.lower() for t in SKILL_TOOL_NAMES}
+PATH_KEYS = (
+    "filePath",
+    "file_path",
+    "path",
+    "AbsolutePath",
+    "absolutePath",
+    "filepath",
+    "absolute_path",
+    "file",
+)
+SKILL_NAME_KEYS = ("skill", "name", "skill_name", "skillName", "SkillName", "skill_id", "skillId")
 _EXCLUDED_PARTS = {".archive", ".curator_backups", ".hub"}
 
-_NAME = r"[a-z0-9][a-z0-9_-]*"
-SLASH_RE = re.compile(rf"^\s*/(?:({_NAME}):)?({_NAME})(?=\s|$)(?:\s+({_NAME})(?=\s|$))?")
-NAME_RE = re.compile(rf"^(?:{_NAME}:)?({_NAME})$")
-_CMD_NAME_RE = re.compile(r"<command-name>\s*([^<]+?)\s*</command-name>")
-_CMD_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL)
+_NAME = r"[a-zA-Z0-9][a-zA-Z0-9_-]*"
+SLASH_RE = re.compile(rf"^\s*/(?:({_NAME}):)?({_NAME})(?=\s|$)(?:\s+({_NAME})(?=\s|$))?", re.IGNORECASE)
+NAME_RE = re.compile(rf"^(?:{_NAME}:)?({_NAME})$", re.IGNORECASE)
+_CMD_NAME_RE = re.compile(r"<command-name>\s*([^<]+?)\s*</command-name>", re.IGNORECASE)
+_CMD_ARGS_RE = re.compile(r"<command-args>\s*(.*?)\s*</command-args>", re.DOTALL | re.IGNORECASE)
 
 
 def _clean_str(value):
     if not isinstance(value, str):
         return None
     cleaned = value.strip()
-    if len(cleaned) >= 2 and cleaned[0] == '"' and cleaned[-1] == '"':
+    if len(cleaned) >= 2 and ((cleaned[0] == '"' and cleaned[-1] == '"') or (cleaned[0] == "'" and cleaned[-1] == "'")):
         cleaned = cleaned[1:-1]
     return cleaned or None
 
@@ -37,6 +48,8 @@ def skill_from_path(value):
     if "skills" not in folder_parts or any(p in _EXCLUDED_PARTS for p in folder_parts):
         return None
     name = raw_parts[-2]
+    if name.lower() in ("skills", "references", "templates", "assets", "scripts", "examples", "resources"):
+        return None
     return (name, os.path.normpath(cleaned)) if name else None
 
 
@@ -61,9 +74,17 @@ def _record(event, type_, **extra):
         ws_paths = event.get("workspacePaths")
         if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
             cwd = ws_paths[0]
+        else:
+            tc = event.get("toolCall")
+            if isinstance(tc, dict):
+                args = tc.get("args")
+                if isinstance(args, dict):
+                    raw_tc_cwd = _clean_str(args.get("Cwd") or args.get("cwd"))
+                    if raw_tc_cwd:
+                        cwd = raw_tc_cwd
     cleaned_cwd = _clean_str(cwd) if isinstance(cwd, str) else None
     workspace = os.path.basename(os.path.normpath(cleaned_cwd)) if cleaned_cwd else ""
-    session_id = event.get("session_id") or event.get("conversationId") or ""
+    session_id = event.get("session_id") or event.get("sessionId") or event.get("conversationId") or ""
     record = {
         "type": type_,
         "ts": ts,
@@ -78,13 +99,25 @@ def _record(event, type_, **extra):
 
 
 def _is_paginated_continuation(data: dict) -> bool:
-    for key in ("StartLine", "offset"):
+    for key in (
+        "StartLine",
+        "start_line",
+        "startLine",
+        "offset",
+        "ContentOffset",
+        "content_offset",
+        "contentOffset",
+    ):
         raw = data.get(key)
         if raw is None:
             continue
         cleaned = _clean_str(raw) if isinstance(raw, str) else raw
         try:
-            if int(cleaned) > 1:
+            val = int(cleaned)
+            if key.lower().replace("_", "") == "contentoffset":
+                if val > 0:
+                    return True
+            elif val > 1:
                 return True
         except (TypeError, ValueError):
             pass
@@ -101,7 +134,8 @@ def _from_tool(event):
             data = tool_call.get("args")
     if not isinstance(data, dict):
         return None
-    if tool in READ_TOOL_NAMES:
+    tool_lower = tool.lower() if isinstance(tool, str) else ""
+    if tool in READ_TOOL_NAMES or tool_lower in READ_TOOL_NAMES_LOWER:
         if _is_paginated_continuation(data):
             return None
         for key in PATH_KEYS:
@@ -109,8 +143,10 @@ def _from_tool(event):
             if found:
                 return _record(event, "load", skill=found[0], path=found[1], source="agent-read")
         return None
-    if tool in SKILL_TOOL_NAMES:
-        if tool == "skill_view" and _clean_str(data.get("file_path")):
+    if tool in SKILL_TOOL_NAMES or tool_lower in SKILL_TOOL_NAMES_LOWER:
+        if (tool == "skill_view" or tool_lower == "skill_view") and any(
+            _clean_str(data.get(k)) for k in ("file_path", "filePath", "path", "file")
+        ):
             return None
         for key in SKILL_NAME_KEYS:
             value = _clean_str(data.get(key))
@@ -140,9 +176,15 @@ def _from_prompt(event, known_names):
     if not match:
         return None
     names = known_names()
-    for name in (match.group(2), match.group(3)):
-        if name and name in names:
-            return _record(event, "load", skill=name, path="", source="user-slash")
+    name_map = {n.lower(): n for n in names}
+    for candidate in (match.group(2), match.group(3), match.group(1)):
+        if not candidate:
+            continue
+        if candidate in names:
+            return _record(event, "load", skill=candidate, path="", source="user-slash")
+        cand_lower = candidate.lower()
+        if cand_lower in name_map:
+            return _record(event, "load", skill=name_map[cand_lower], path="", source="user-slash")
     return None
 
 
@@ -156,6 +198,6 @@ def detect(event, known_names):
         return _from_prompt(event, known_names)
     if "toolCall" in event:
         return _from_tool(event)
-    if event.get("invocationNum") == 1 and "conversationId" in event:
+    if event.get("invocationNum") in (1, "1") and "conversationId" in event:
         return _record(event, "session")
     return None

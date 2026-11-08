@@ -103,6 +103,48 @@ class CliTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertIn(str(output), stderr.getvalue())
 
+    def test_maybe_sync_skips_when_copilot_filter_specified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            with patch("skill_usage.Path.home", return_value=home), patch(
+                "tracker.sync.sync_events"
+            ) as mock_sync:
+                code = skill_usage.main(["report", "--agent", "copilot", "--workspace", tmp])
+                self.assertEqual(code, 0)
+                mock_sync.assert_not_called()
+    def test_report_csv_creates_missing_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "data"
+            store.append_event(
+                {"type": "session", "ts": "2026-10-13T08:00:00Z", "session_id": "s1", "workspace": "w"}, base
+            )
+            csv_path = Path(tmp) / "nested" / "subfolder" / "out.csv"
+            code = skill_usage.main(
+                ["report", "--data-dir", str(base), "--workspace", tmp, "--csv", str(csv_path), "--no-sync"]
+            )
+            self.assertEqual(code, 0)
+            self.assertTrue(csv_path.is_file())
+
+    def test_report_csv_reports_write_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "data"
+            store.append_event(
+                {"type": "session", "ts": "2026-10-13T08:00:00Z", "session_id": "s1", "workspace": "w"}, base
+            )
+            # Create a regular file where directory is expected to cause OSError
+            blocker = Path(tmp) / "blocker"
+            blocker.write_text("file")
+            csv_path = blocker / "out.csv"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = skill_usage.main(
+                    ["report", "--data-dir", str(base), "--workspace", tmp, "--csv", str(csv_path), "--no-sync"]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("error: could not write CSV to", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
+

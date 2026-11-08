@@ -14,6 +14,8 @@ def _maybe_sync(args, home: Path, workspaces: list[Path]) -> None:
     if not should_sync:
         return
     agent_arg = getattr(args, "agent", "all")
+    if agent_arg != "all" and agent_arg not in sync.SYNC_AGENTS:
+        return
     agents = (agent_arg,) if agent_arg in sync.SYNC_AGENTS else None
     sync.sync_events(data_dir=args.data_dir, home=home, workspaces=workspaces, agents=agents)
 
@@ -93,7 +95,13 @@ def main(argv=None):
     print(report.render(summary, args.min_days, args.min_sessions))
     if args.csv:
         enough = report.meets_threshold(summary, args.min_days, args.min_sessions)
-        report.write_csv(summary, args.csv, enough)
+        try:
+            if hasattr(args.csv, "parent") and args.csv.parent:
+                args.csv.parent.mkdir(parents=True, exist_ok=True)
+            report.write_csv(summary, args.csv, enough)
+        except OSError as exc:
+            print(f"error: could not write CSV to {args.csv}: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 
