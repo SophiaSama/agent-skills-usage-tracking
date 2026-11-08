@@ -91,7 +91,7 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <p class="lede">Observed skill-load metadata alongside the inventory scanned when this dashboard was generated.</p></header>
 <div class="toolbar">
 <div class="control-group" id="agent-control" role="group" aria-label="Agent">
-<span class="control-label">Agent</span><button type="button" data-agent="all" aria-pressed="true">All agents</button><button type="button" data-agent="copilot" aria-pressed="false">Copilot</button><button type="button" data-agent="claude" aria-pressed="false">Claude</button><button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button><button type="button" data-agent="pi" aria-pressed="false">Pi Agent</button><button type="button" data-agent="hermes" aria-pressed="false">Hermes Agent</button>
+<span class="control-label">Agent</span><button type="button" data-agent="all" aria-pressed="true">All agents</button><button type="button" data-agent="copilot" aria-pressed="false">Copilot</button><button type="button" data-agent="claude" aria-pressed="false">Claude</button><button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button><button type="button" data-agent="pi" aria-pressed="false">Pi Agent</button><button type="button" data-agent="hermes" aria-pressed="false">Hermes Agent</button><button type="button" data-agent="codex" aria-pressed="false">Codex</button>
 </div>
 <div class="control-group" id="range-control" role="group" aria-label="Time range">
 <span class="control-label">Time range</span><button type="button" data-range="30d" aria-pressed="true">Last 30 days</button><button type="button" data-range="all" aria-pressed="false">All recorded history</button>

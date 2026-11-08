@@ -26,15 +26,31 @@ _LIVE_HOOK_SLACK_SECONDS = 30
 def _epoch_to_iso(value) -> str | None:
     if isinstance(value, (int, float)) and value > 0:
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            f = float(value)
+            if f > 1e17:
+                f /= 1e9
+            elif f > 1e14:
+                f /= 1e6
+            elif f > 1e11:
+                f /= 1e3
+            return datetime.fromtimestamp(f, tz=timezone.utc).isoformat()
         except (OSError, OverflowError, ValueError):
             return None
     if isinstance(value, str) and value.strip():
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            f = float(value.strip())
+            if f > 0:
+                if f > 1e17:
+                    f /= 1e9
+                elif f > 1e14:
+                    f /= 1e6
+                elif f > 1e11:
+                    f /= 1e3
+                return datetime.fromtimestamp(f, tz=timezone.utc).isoformat()
         except (OSError, OverflowError, ValueError):
-            parsed = parse_ts(value.strip())
-            return parsed.isoformat() if parsed else None
+            pass
+        parsed = parse_ts(value.strip())
+        return parsed.isoformat() if parsed else None
     return None
 
 
@@ -563,6 +579,379 @@ def collect_claude_events(home: Path, known_names: set[str]) -> list[dict]:
                                 events.append(rec)
         except OSError:
             continue
+def _extract_codex_tool_call(d: dict) -> tuple[str, dict] | None:
+    if not isinstance(d, dict):
+        return None
+    fn = d.get("function") or d.get("call") or d.get("tool")
+    if isinstance(fn, dict):
+        name = fn.get("name") or fn.get("tool_name") or d.get("name") or d.get("tool_name") or d.get("tool")
+        args = (
+            fn.get("arguments")
+            or fn.get("args")
+            or fn.get("input")
+            or fn.get("parameters")
+            or fn.get("params")
+            or d.get("arguments")
+            or d.get("args")
+            or d.get("input")
+            or d.get("parameters")
+            or d.get("params")
+        )
+    else:
+        name = d.get("name") or d.get("tool_name") or d.get("tool")
+        args = d.get("arguments") or d.get("args") or d.get("input") or d.get("parameters") or d.get("params")
+
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    return (str(name), args) if name and isinstance(args, dict) else None
+
+
+def collect_codex_events(home: Path, known_names: set[str]) -> list[dict]:
+    events: list[dict] = []
+    codex_dir = home / ".codex"
+    if not inventory._is_dir(codex_dir):
+        return events
+    try:
+        raw_files = sorted(codex_dir.rglob("*"))
+        session_files = [
+            p
+            for p in raw_files
+            if p.is_file()
+            and p.suffix in (".jsonl", ".log", ".json")
+            and not any(part in ("skills", "history", "plugins", "cache") for part in p.relative_to(codex_dir).parts)
+            and p.name not in ("history.jsonl", "session_index.jsonl", "hooks.json", "config.json", "settings.json", ".usage.json")
+        ]
+    except OSError:
+        return events
+
+    seen_sessions: set[str] = set()
+    session_events_by_id: dict[str, dict] = {}
+    recent_reads: dict[tuple[str, str], datetime] = {}
+
+    for path in session_files:
+        default_sid = path.stem
+        session_loads: list[dict] = []
+        file_top_id = ""
+        file_top_cwd = ""
+        try:
+            entries: list[dict] = []
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict):
+                        sub_list = (
+                            parsed.get("events")
+                            or parsed.get("messages")
+                            or parsed.get("items")
+                            or parsed.get("steps")
+                            or parsed.get("history")
+                        )
+                        if isinstance(sub_list, list):
+                            for item in sub_list:
+                                if isinstance(item, dict):
+                                    if "session_id" not in item and "id" not in item:
+                                        wrap_id = parsed.get("id") or parsed.get("session_id") or parsed.get("sessionId")
+                                        if wrap_id:
+                                            item["session_id"] = wrap_id
+                                    if "cwd" not in item:
+                                        wrap_cwd = parsed.get("cwd") or parsed.get("working_directory") or parsed.get("workdir") or parsed.get("workspace")
+                                        if wrap_cwd:
+                                            item["cwd"] = wrap_cwd
+                                    entries.append(item)
+                        else:
+                            entries.append(parsed)
+                except ValueError:
+                    continue
+            if not entries and content.strip():
+                try:
+                    full_parsed = json.loads(content)
+                    if isinstance(full_parsed, list):
+                        entries = [item for item in full_parsed if isinstance(item, dict)]
+                    elif isinstance(full_parsed, dict):
+                        file_top_id = str(full_parsed.get("id") or full_parsed.get("session_id") or full_parsed.get("sessionId") or "")
+                        file_top_cwd = str(full_parsed.get("cwd") or full_parsed.get("working_directory") or full_parsed.get("workdir") or full_parsed.get("workspace") or "")
+                        raw_list = (
+                            full_parsed.get("events")
+                            or full_parsed.get("messages")
+                            or full_parsed.get("items")
+                            or full_parsed.get("steps")
+                            or full_parsed.get("history")
+                            or [full_parsed]
+                        )
+                        if isinstance(raw_list, list):
+                            for item in raw_list:
+                                if isinstance(item, dict):
+                                    if "session_id" not in item and "id" not in item and file_top_id:
+                                        item["session_id"] = file_top_id
+                                    if "cwd" not in item and file_top_cwd:
+                                        item["cwd"] = file_top_cwd
+                                    entries.append(item)
+                except ValueError:
+                    entries = []
+        except OSError:
+            continue
+
+        file_sid = file_top_id
+        file_cwd = file_top_cwd
+        for entry in entries:
+            p = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if not file_sid:
+                cand_sid = (
+                    p.get("id")
+                    or p.get("session_id")
+                    or p.get("sessionId")
+                    or entry.get("id")
+                    or entry.get("session_id")
+                    or entry.get("sessionId")
+                )
+                if cand_sid:
+                    file_sid = str(cand_sid)
+            if not file_cwd:
+                cand_cwd = (
+                    p.get("cwd")
+                    or p.get("working_directory")
+                    or p.get("workdir")
+                    or p.get("workspace")
+                    or entry.get("cwd")
+                    or entry.get("working_directory")
+                    or entry.get("workdir")
+                    or entry.get("workspace")
+                )
+                if isinstance(cand_cwd, str) and cand_cwd:
+                    file_cwd = cand_cwd
+            if file_sid and file_cwd:
+                break
+
+        sid = file_sid or default_sid
+        cwd = file_cwd or ""
+
+        for entry in entries:
+            etype = entry.get("type")
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            msg_dict = (
+                entry.get("message")
+                if isinstance(entry.get("message"), dict)
+                else (payload.get("message") if isinstance(payload.get("message"), dict) else None)
+            )
+
+            if etype in ("session_meta", "session", "session_start"):
+                entry_sid = (
+                    payload.get("id")
+                    or payload.get("session_id")
+                    or payload.get("sessionId")
+                    or entry.get("id")
+                    or entry.get("session_id")
+                    or entry.get("sessionId")
+                )
+            else:
+                entry_sid = (
+                    payload.get("session_id")
+                    or payload.get("sessionId")
+                    or entry.get("session_id")
+                    or entry.get("sessionId")
+                )
+
+            if entry_sid:
+                sid = str(entry_sid)
+
+            entry_cwd = (
+                payload.get("cwd")
+                or payload.get("working_directory")
+                or payload.get("workdir")
+                or payload.get("workspace")
+                or entry.get("cwd")
+                or entry.get("working_directory")
+                or entry.get("workdir")
+                or entry.get("workspace")
+            )
+            if isinstance(entry_cwd, str) and entry_cwd:
+                cwd = entry_cwd
+                ws_name = os.path.basename(os.path.normpath(cwd))
+                if sid in session_events_by_id and not session_events_by_id[sid].get("workspace"):
+                    session_events_by_id[sid]["workspace"] = ws_name
+                for ev in session_loads:
+                    if ev.get("session_id") == sid and not ev.get("workspace"):
+                        ev["workspace"] = ws_name
+
+            ts = (
+                _epoch_to_iso(entry.get("timestamp"))
+                or _epoch_to_iso(payload.get("timestamp"))
+                or (_epoch_to_iso(msg_dict.get("timestamp")) if msg_dict else None)
+            )
+
+            if etype in ("session_meta", "session", "session_start") and ts:
+                if sid not in seen_sessions:
+                    workspace = os.path.basename(os.path.normpath(cwd)) if cwd else ""
+                    ev = {
+                        "type": "session",
+                        "ts": ts,
+                        "session_id": sid,
+                        "workspace": workspace,
+                        "agent": "codex",
+                    }
+                    events.append(ev)
+                    seen_sessions.add(sid)
+                    session_events_by_id[sid] = ev
+                continue
+
+            if not ts:
+                continue
+
+            if sid not in seen_sessions:
+                workspace = os.path.basename(os.path.normpath(cwd)) if cwd else ""
+                ev = {
+                    "type": "session",
+                    "ts": ts,
+                    "session_id": sid,
+                    "workspace": workspace,
+                    "agent": "codex",
+                }
+                events.append(ev)
+                seen_sessions.add(sid)
+                session_events_by_id[sid] = ev
+
+            role = entry.get("role") or payload.get("role") or (msg_dict.get("role") if msg_dict else None)
+            p_type = payload.get("type") if payload else ""
+            is_user = (
+                role == "user"
+                or etype in ("user_message", "user_prompt", "user_input", "user")
+                or (etype == "event_msg" and p_type in ("user_message", "user_prompt", "prompt", "user"))
+            )
+            if is_user:
+                raw_content = (
+                    (msg_dict.get("content") or msg_dict.get("text") or msg_dict.get("message") or msg_dict.get("prompt"))
+                    if msg_dict
+                    else None
+                )
+                if raw_content is None:
+                    raw_content = (
+                        payload.get("message")
+                        or payload.get("content")
+                        or payload.get("text")
+                        or payload.get("prompt")
+                        or entry.get("message")
+                        or entry.get("content")
+                        or entry.get("prompt")
+                    )
+                texts: list[str] = []
+                if isinstance(raw_content, str):
+                    texts.append(raw_content)
+                elif isinstance(raw_content, list):
+                    for part in raw_content:
+                        if isinstance(part, str):
+                            texts.append(part)
+                        elif isinstance(part, dict):
+                            part_text = part.get("text") or part.get("content")
+                            if isinstance(part_text, str):
+                                texts.append(part_text)
+                for text in texts:
+                    if detect._CODEX_HEADER_RE.search(text):
+                        text = detect._CODEX_HEADER_RE.sub("", text, count=1).strip()
+                    elif "## My request for Codex:" in text:
+                        text = text.split("## My request for Codex:", 1)[1].strip()
+                    text = text.strip()
+                    if "/" not in text and "<command-name>" not in text:
+                        continue
+                    syn = {
+                        "hook_event_name": "UserPromptSubmit",
+                        "timestamp": ts,
+                        "session_id": sid,
+                        "cwd": cwd,
+                        "prompt": text,
+                        "agent": "codex",
+                    }
+                    rec = detect.detect(syn, lambda: known_names)
+                    if rec:
+                        events.append(rec)
+                        session_loads.append(rec)
+
+            tool_calls_to_process: list[tuple[str, dict]] = []
+
+            if etype == "response_item" and p_type in ("function_call", "tool_call", "custom_tool_call", "tool_use", "call", "tool"):
+                tc = _extract_codex_tool_call(payload)
+                if tc:
+                    tool_calls_to_process.append(tc)
+            elif etype in ("function_call", "tool_call", "tool_use", "custom_tool_call", "call"):
+                tc = _extract_codex_tool_call(entry)
+                if tc:
+                    tool_calls_to_process.append(tc)
+
+            calls_list = (
+                entry.get("tool_calls")
+                or payload.get("tool_calls")
+                or (msg_dict.get("tool_calls") if msg_dict else None)
+            )
+            if isinstance(calls_list, list):
+                for c in calls_list:
+                    tc = _extract_codex_tool_call(c)
+                    if tc:
+                        tool_calls_to_process.append(tc)
+
+            fn_call = (
+                entry.get("function_call")
+                or payload.get("function_call")
+                or (msg_dict.get("function_call") if msg_dict else None)
+            )
+            if isinstance(fn_call, dict):
+                tc = _extract_codex_tool_call(fn_call)
+                if tc:
+                    tool_calls_to_process.append(tc)
+
+            msg_content = (
+                (msg_dict.get("content") if msg_dict else None)
+                or payload.get("content")
+                or entry.get("content")
+            )
+            if isinstance(msg_content, list):
+                for part in msg_content:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type")
+                    if ptype in ("tool_use", "tool_call", "function_call", "toolCall", "call"):
+                        tc = _extract_codex_tool_call(part)
+                        if tc:
+                            tool_calls_to_process.append(tc)
+
+            seen_calls: set[tuple[str, str]] = set()
+            for tool_name, tool_input in tool_calls_to_process:
+                call_key = (tool_name, json.dumps(tool_input, sort_keys=True))
+                if call_key in seen_calls:
+                    continue
+                seen_calls.add(call_key)
+                syn = {
+                    "hook_event_name": "PostToolUse",
+                    "timestamp": ts,
+                    "session_id": sid,
+                    "cwd": cwd,
+                    "agent": "codex",
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                }
+                rec = detect.detect(syn, lambda: known_names)
+                if rec:
+                    if rec.get("source") == "agent-read" and _should_skip_recent_read(
+                        recent_reads, sid, rec["skill"], rec["ts"]
+                    ):
+                        continue
+                    events.append(rec)
+                    session_loads.append(rec)
+
+        if cwd:
+            ws_name = os.path.basename(os.path.normpath(cwd))
+            if sid in session_events_by_id and not session_events_by_id[sid].get("workspace"):
+                session_events_by_id[sid]["workspace"] = ws_name
+            for ev in session_loads:
+                if ev.get("session_id") == sid and not ev.get("workspace"):
+                    ev["workspace"] = ws_name
+
     return events
 
 
@@ -609,6 +998,7 @@ def sync_events(
         "antigravity": collect_antigravity_events,
         "pi": collect_pi_events,
         "hermes": collect_hermes_events,
+        "codex": collect_codex_events,
     }
     counts = {a: 0 for a in SYNC_AGENTS}
 
@@ -854,6 +1244,36 @@ def register(ctx) -> None:
 '''
         init_path.write_text(init_code, encoding="utf-8")
         installed["hermes"] = str(init_path)
+
+    if "codex" in targets:
+        codex_dir = resolved_home / ".codex"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        hooks_path = codex_dir / "hooks.json"
+        hooks_data: dict = {}
+        if hooks_path.is_file():
+            try:
+                loaded = json.loads(hooks_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    hooks_data = loaded
+            except (OSError, ValueError):
+                hooks_data = {}
+        codex_cmd = f'{cmd} --agent codex'
+        hooks_target = hooks_data["hooks"] if isinstance(hooks_data.get("hooks"), dict) else hooks_data
+        hooks_target["SessionStart"] = _upsert_claude_hook_list(
+            hooks_target.get("SessionStart") if isinstance(hooks_target.get("SessionStart"), list) else [],
+            codex_cmd,
+        )
+        hooks_target["UserPromptSubmit"] = _upsert_claude_hook_list(
+            hooks_target.get("UserPromptSubmit") if isinstance(hooks_target.get("UserPromptSubmit"), list) else [],
+            codex_cmd,
+        )
+        hooks_target["PostToolUse"] = _upsert_claude_hook_list(
+            hooks_target.get("PostToolUse") if isinstance(hooks_target.get("PostToolUse"), list) else [],
+            codex_cmd,
+            matcher=".*(?:read_file|view_file|read|view|readFile|Read|Skill|skill|skill_view|file_read|file_view)",
+        )
+        hooks_path.write_text(json.dumps(hooks_data, indent=2) + "\n", encoding="utf-8")
+        installed["codex"] = str(hooks_path)
 
     return installed
 
