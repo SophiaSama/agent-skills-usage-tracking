@@ -170,6 +170,31 @@ class ReportTests(unittest.TestCase):
         )
         self.assertEqual(rows["dup"]["paths"], "/a/dup/SKILL.md;/b/dup/SKILL.md")
 
+    def test_case_insensitive_matching_and_slash_read_pairing(self):
+        copies = [
+            SkillCopy("My-Skill", "/p/skills/My-Skill/SKILL.md", "personal", ("copilot",)),
+        ]
+        # Uppercase inventory copy, lowercase slash command, uppercase agent read
+        events = [
+            session("s1", 2),
+            load("my-skill", "user-slash", "s1", 2),
+            load("My-Skill", "agent-read", "s1", 2),
+        ]
+        summary = report.summarize(events, copies, NOW, 30)
+        self.assertEqual(summary.merged, 1)
+        self.assertEqual(len(summary.rows), 1)
+        row = summary.rows[0]
+        self.assertEqual(row.name, "My-Skill")
+        self.assertEqual(row.counts["user-slash"], 1)
+        self.assertEqual(row.counts["agent-read"], 0)
+        self.assertEqual(row.total, 1)
+
+        # Confirm not-observed and unmatched lists are empty
+        rendered = report.render(summary, 30, 20)
+        self.assertNotIn("- My-Skill (personal)", rendered)
+        self.assertIn("## Unmatched loads (no inventory entry)\n\nNone.", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -8,3 +8,4 @@ __pycache__/
 .superpowers/
 # local output
 skill-usage-dashboard.html
+.agents/

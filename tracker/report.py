@@ -84,8 +84,10 @@ def _summarize(events, copies, now, days, agent: str | None = None):
     sessions = {e["session_id"] for _, e in in_window if e.get("session_id")}
 
     by_name: dict[str, Row] = {}
+    lower_map: dict[str, str] = {}
     for copy in copies:
-        by_name.setdefault(copy.name, Row(copy.name)).copies.append(copy)
+        canonical = lower_map.setdefault(copy.name.lower(), copy.name)
+        by_name.setdefault(canonical, Row(canonical)).copies.append(copy)
     pending: dict[tuple, list] = {}
     merged = 0
     by_agent: dict[str, int] = {}
@@ -94,8 +96,9 @@ def _summarize(events, copies, now, days, agent: str | None = None):
         source = event.get("source")
         if event.get("type") != "load" or not name or source not in SOURCES:
             continue
+        canonical_name = lower_map.setdefault(name.lower(), name)
         ag = event_agent(event)
-        key = (event.get("session_id"), name)
+        key = (event.get("session_id"), canonical_name)
         if source == "user-slash":
             pending.setdefault(key, []).append(stamp)
         elif source == "agent-read":
@@ -106,7 +109,7 @@ def _summarize(events, copies, now, days, agent: str | None = None):
                 waiting.remove(hit)
                 merged += 1
                 continue
-        row = by_name.setdefault(name, Row(name))
+        row = by_name.setdefault(canonical_name, Row(canonical_name))
         row.counts[source] += 1
         row.agents.add(ag)
         row.by_agent[ag] = row.by_agent.get(ag, 0) + 1

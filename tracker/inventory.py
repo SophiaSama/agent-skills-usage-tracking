@@ -32,6 +32,7 @@ _PROJECT_AGENT_DIRS = (
 _ANTIGRAVITY_BUILTIN_DIRS = (
     ".gemini/antigravity/builtin/skills",
     ".gemini/antigravity-ide/builtin/skills",
+    ".gemini/antigravity-cli/builtin/skills",
 )
 
 

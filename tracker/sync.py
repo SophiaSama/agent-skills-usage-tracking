@@ -13,11 +13,14 @@ from tracker import detect, inventory, store
 from tracker.report import parse_ts
 
 SYNC_AGENTS = ("claude", "antigravity", "pi", "hermes")
-_USER_REQ_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
-_PI_SKILL_CMD_RE = re.compile(rf"^\s*/skill:({detect._NAME})(?=\s|$)")
+_USER_REQ_RE = re.compile(
+    r"<\s*(?:USER_REQUEST|USER_PROMPT|USER_MESSAGE)(?:\s+[^>]*)?>\s*(.*?)\s*<\s*/(?:USER_REQUEST|USER_PROMPT|USER_MESSAGE)\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_PI_SKILL_CMD_RE = re.compile(rf"^\s*/skill:({detect._NAME})(?=\s|$)", re.IGNORECASE)
 _HERMES_INVOKE_RE = re.compile(r'^\[IMPORTANT: The user has invoked the "([^"]+)"')
 _DEDUP_READ_SECONDS = 60
-_LIVE_HOOK_SLACK_SECONDS = 5
+_LIVE_HOOK_SLACK_SECONDS = 30
 
 
 def _epoch_to_iso(value) -> str | None:
@@ -64,7 +67,14 @@ def collect_antigravity_events(home: Path, known_names: set[str]) -> list[dict]:
                 continue
             transcript = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
             if not inventory._is_file(transcript):
-                continue
+                alt1 = conv_dir / "transcript.jsonl"
+                alt2 = conv_dir / "logs" / "transcript.jsonl"
+                if inventory._is_file(alt1):
+                    transcript = alt1
+                elif inventory._is_file(alt2):
+                    transcript = alt2
+                else:
+                    continue
             session_id = conv_dir.name
             first_ts: str | None = None
             cwd: str = ""
@@ -79,11 +89,13 @@ def collect_antigravity_events(home: Path, known_names: set[str]) -> list[dict]:
                             continue
                         if not isinstance(step, dict):
                             continue
-                        step_ts = step.get("created_at")
-                        if isinstance(step_ts, str) and step_ts and first_ts is None:
+                        step_ts = _epoch_to_iso(step.get("created_at") or step.get("timestamp"))
+                        if step_ts and first_ts is None:
                             first_ts = step_ts
-                        step_type = step.get("type")
-                        if step_type == "USER_INPUT":
+                        step_type = str(step.get("type") or "")
+                        if step_type in ("USER_INPUT", "USER", "user", "USER_MESSAGE") or (
+                            isinstance(step.get("content"), str) and "/" in step["content"]
+                        ):
                             content = step.get("content")
                             if isinstance(content, str) and "/" in content:
                                 prompt = _extract_agy_prompt(content)
@@ -98,13 +110,20 @@ def collect_antigravity_events(home: Path, known_names: set[str]) -> list[dict]:
                                 rec = detect.detect(syn, lambda: known_names)
                                 if rec:
                                     session_loads.append(rec)
-                        elif step_type == "PLANNER_RESPONSE":
-                            for tc in step.get("tool_calls") or []:
+                        tcs = step.get("tool_calls") or step.get("toolCalls") or []
+                        if tcs or step_type in ("PLANNER_RESPONSE", "AGENT_RESPONSE", "MODEL_RESPONSE", "TOOL_EXECUTION"):
+                            for tc in tcs:
                                 if not isinstance(tc, dict):
                                     continue
                                 args = tc.get("args")
+                                if isinstance(args, str):
+                                    try:
+                                        args = json.loads(args)
+                                        tc["args"] = args
+                                    except ValueError:
+                                        args = {}
                                 if isinstance(args, dict) and not cwd:
-                                    raw_cwd = detect._clean_str(args.get("Cwd"))
+                                    raw_cwd = detect._clean_str(args.get("Cwd") or args.get("cwd"))
                                     if raw_cwd:
                                         cwd = raw_cwd
                                 syn = {
@@ -211,10 +230,12 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                                 for part in content:
                                     if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
                                         texts.append(part["text"])
+                            name_map = {n.lower(): n for n in known_names}
                             for text in texts:
                                 m = _PI_SKILL_CMD_RE.match(text)
                                 if m:
                                     workspace = os.path.basename(os.path.normpath(cwd)) if cwd else ""
+                                    skill_name = name_map.get(m.group(1).lower(), m.group(1))
                                     events.append(
                                         {
                                             "type": "load",
@@ -222,7 +243,7 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                                             "session_id": session_id,
                                             "workspace": workspace,
                                             "agent": "pi",
-                                            "skill": m.group(1),
+                                            "skill": skill_name,
                                             "path": "",
                                             "source": "user-slash",
                                         }
@@ -243,6 +264,12 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                             for part in content:
                                 if not isinstance(part, dict) or part.get("type") != "toolCall":
                                     continue
+                                raw_input = part.get("arguments") if part.get("arguments") is not None else part.get("input")
+                                if isinstance(raw_input, str):
+                                    try:
+                                        raw_input = json.loads(raw_input)
+                                    except ValueError:
+                                        raw_input = {}
                                 syn = {
                                     "hook_event_name": "PostToolUse",
                                     "timestamp": ts,
@@ -250,7 +277,7 @@ def collect_pi_events(home: Path, known_names: set[str]) -> list[dict]:
                                     "cwd": cwd,
                                     "agent": "pi",
                                     "tool_name": part.get("name"),
-                                    "tool_input": part.get("arguments") if isinstance(part.get("arguments"), dict) else {},
+                                    "tool_input": raw_input if isinstance(raw_input, dict) else {},
                                 }
                                 rec = detect.detect(syn, lambda: known_names)
                                 if rec:
@@ -278,9 +305,9 @@ def collect_hermes_events(home: Path, known_names: set[str]) -> list[dict]:
         conn = None
         try:
             try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
             except sqlite3.Error:
-                conn = sqlite3.connect(str(db_path))
+                conn = sqlite3.connect(str(db_path), timeout=30.0)
             conn.row_factory = sqlite3.Row
 
             for row in conn.execute("SELECT id, started_at, cwd, source FROM sessions"):
@@ -301,11 +328,21 @@ def collect_hermes_events(home: Path, known_names: set[str]) -> list[dict]:
                     )
 
             recent_reads: dict[tuple[str, str], datetime] = {}
-            query = (
-                "SELECT session_id, role, content, tool_calls, timestamp "
-                "FROM messages WHERE COALESCE(active, 1) = 1 ORDER BY timestamp, id"
-            )
-            for row in conn.execute(query):
+            name_map = {n.lower(): n for n in known_names}
+            try:
+                msg_cursor = conn.execute(
+                    "SELECT session_id, role, content, tool_calls, timestamp "
+                    "FROM messages WHERE COALESCE(active, 1) = 1 ORDER BY timestamp, id"
+                )
+            except sqlite3.OperationalError:
+                try:
+                    msg_cursor = conn.execute(
+                        "SELECT session_id, role, content, tool_calls, timestamp "
+                        "FROM messages ORDER BY timestamp"
+                    )
+                except sqlite3.OperationalError:
+                    msg_cursor = []
+            for row in msg_cursor:
                 sid = str(row["session_id"] or "")
                 ts = _epoch_to_iso(row["timestamp"])
                 if not sid or not ts:
@@ -321,7 +358,8 @@ def collect_hermes_events(home: Path, known_names: set[str]) -> list[dict]:
                     if m:
                         raw_skill = m.group(1).strip().lstrip("/")
                         name_match = detect.NAME_RE.match(raw_skill)
-                        skill_name = name_match.group(1) if name_match else raw_skill
+                        raw_name = name_match.group(1) if name_match else raw_skill
+                        skill_name = name_map.get(raw_name.lower(), raw_name)
                         if skill_name:
                             events.append(
                                 {
@@ -403,7 +441,10 @@ def collect_hermes_events(home: Path, known_names: set[str]) -> list[dict]:
             for skill_name, meta in sorted(usage_data.items()):
                 if not isinstance(meta, dict):
                     continue
-                count = max(int(meta.get("use_count") or 0), int(meta.get("view_count") or 0))
+                try:
+                    count = max(int(meta.get("use_count") or 0), int(meta.get("view_count") or 0))
+                except (ValueError, TypeError):
+                    count = 0
                 last_raw = meta.get("last_used_at") or meta.get("last_viewed_at")
                 last_iso = _epoch_to_iso(last_raw)
                 if count > 0 and last_iso and db_skill_counts.get(skill_name, 0) == 0:
@@ -481,7 +522,7 @@ def collect_claude_events(home: Path, known_names: set[str]) -> list[dict]:
                                 if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
                                     texts.append(part["text"])
                         for text in texts:
-                            if "/" not in text and "<command-name>" not in text:
+                            if "/" not in text and "<command-name>" not in text.lower():
                                 continue
                             syn = {
                                 "hook_event_name": "UserPromptSubmit",
@@ -498,7 +539,12 @@ def collect_claude_events(home: Path, known_names: set[str]) -> list[dict]:
                         for part in content:
                             if not isinstance(part, dict) or part.get("type") not in ("tool_use", "toolCall"):
                                 continue
-                            raw_input = part.get("input") if isinstance(part.get("input"), dict) else part.get("arguments")
+                            raw_input = part.get("input") if part.get("input") is not None else part.get("arguments")
+                            if isinstance(raw_input, str):
+                                try:
+                                    raw_input = json.loads(raw_input)
+                                except ValueError:
+                                    raw_input = {}
                             syn = {
                                 "hook_event_name": "PostToolUse",
                                 "timestamp": ts,
@@ -555,7 +601,7 @@ def sync_events(
         if etype == "load":
             stamp = parse_ts(ts_str)
             if stamp is not None:
-                existing_load_times.setdefault((ag, sid, skill, source), []).append(stamp)
+                existing_load_times.setdefault((ag, sid, skill.lower(), source), []).append(stamp)
 
     target_agents = tuple(agents) if agents is not None else SYNC_AGENTS
     collectors = {
@@ -578,15 +624,16 @@ def sync_events(
             source = str(ev.get("source") or "")
 
             if etype == "session":
-                if (ag, sid) in existing_sessions:
+                if sid and (ag, sid) in existing_sessions:
                     continue
-                existing_sessions.add((ag, sid))
+                if sid:
+                    existing_sessions.add((ag, sid))
             else:
                 exact_key = (ag, sid, etype, ts_str, skill, source)
                 if exact_key in existing_exact:
                     continue
                 stamp = parse_ts(ts_str)
-                load_key = (ag, sid, skill, source)
+                load_key = (ag, sid, skill.lower(), source)
                 if stamp is not None:
                     prior = existing_load_times.get(load_key, [])
                     if any(abs((stamp - p).total_seconds()) <= _LIVE_HOOK_SLACK_SECONDS for p in prior):

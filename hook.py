@@ -43,6 +43,14 @@ def run(raw, data_dir=None, home=None, agent=None):
         if isinstance(agent, str) and agent and not event.get("agent"):
             event["agent"] = agent
         cwd = event.get("cwd")
+        if not (isinstance(cwd, str) and cwd):
+            tc = event.get("toolCall")
+            if isinstance(tc, dict):
+                args = tc.get("args")
+                if isinstance(args, dict):
+                    raw_tc_cwd = detect._clean_str(args.get("Cwd") or args.get("cwd"))
+                    if raw_tc_cwd:
+                        cwd = raw_tc_cwd
         workspaces = [Path(cwd)] if isinstance(cwd, str) and cwd else []
         ws_paths = event.get("workspacePaths")
         if isinstance(ws_paths, list):
