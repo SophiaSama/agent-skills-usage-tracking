@@ -43,7 +43,7 @@ def main(argv=None):
     dash.add_argument("--sync", action="store_true", help="sync local agent logs before building dashboard")
     dash.add_argument("--no-sync", action="store_true", help="skip automatic sync of local agent logs")
 
-    syn = sub.add_parser("sync", help="sync skill usage events from Claude, Antigravity, Pi Agent, and Hermes Agent logs")
+    syn = sub.add_parser("sync", help="sync skill usage events from Claude, Antigravity, Pi Agent, Hermes Agent, and Codex logs")
     syn.add_argument("--workspace", action="append", default=[], type=Path)
     syn.add_argument("--data-dir", type=Path)
     syn.add_argument("--agent", choices=SYNC_AGENT_CHOICES, default="all", help="sync only a specific agent")

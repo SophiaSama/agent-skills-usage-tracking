@@ -4,10 +4,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-AGENTS = ("copilot", "claude", "antigravity", "pi", "hermes")
+AGENTS = ("copilot", "claude", "antigravity", "pi", "hermes", "codex")
 ALL_AGENTS = AGENTS
-PERSONAL_DIRS = (".copilot/skills", ".claude/skills", ".agents/skills")
-PROJECT_DIRS = (".github/skills", ".claude/skills", ".agents/skills")
+PERSONAL_DIRS = (".copilot/skills", ".claude/skills", ".codex/skills", ".agents/skills")
+PROJECT_DIRS = (".github/skills", ".claude/skills", ".codex/skills", ".agents/skills")
 PLUGIN_STORES = (".copilot/installed-plugins", ".vscode/agent-plugins")
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
 SUPPORT_DIRS = {"references", "templates", "assets", "scripts", "examples", "resources"}
@@ -15,6 +15,7 @@ SUPPORT_DIRS = {"references", "templates", "assets", "scripts", "examples", "res
 _PERSONAL_AGENT_DIRS = (
     (".copilot/skills", ("copilot",), False),
     (".claude/skills", ("copilot", "claude"), False),
+    (".codex/skills", ("codex",), False),
     (".agents/skills", AGENTS, False),
     (".gemini/config/skills", ("antigravity",), True),
     (".pi/agent/skills", ("pi",), True),
@@ -23,6 +24,7 @@ _PERSONAL_AGENT_DIRS = (
 _PROJECT_AGENT_DIRS = (
     (".github/skills", ("copilot",)),
     (".claude/skills", ("copilot", "claude")),
+    (".codex/skills", ("codex",)),
     (".agents/skills", AGENTS),
     (".agent/skills", ("antigravity",)),
     (".pi/skills", ("pi",)),

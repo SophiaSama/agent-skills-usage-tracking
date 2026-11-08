@@ -1,6 +1,6 @@
 # Agent Skill Usage Tracker
 
-Local-only tracker of which skills your coding agents (**GitHub Copilot**, **Claude**, **Antigravity**, **Pi Agent**, and **Hermes Agent**) load across sessions. Can be used as a reference to review and clean up skills that have not been observed over time. See [docs/design.md](docs/design.md) and [GLOSSARY.md](GLOSSARY.md).
+Local-only tracker of which skills your coding agents (**GitHub Copilot**, **Claude**, **Antigravity**, **Pi Agent**, **Hermes Agent**, and **Codex**) load across sessions. Can be used as a reference to review and clean up skills that have not been observed over time. See [docs/design.md](docs/design.md) and [GLOSSARY.md](GLOSSARY.md).
 
 ## Supported Agents
 
@@ -9,6 +9,7 @@ Local-only tracker of which skills your coding agents (**GitHub Copilot**, **Cla
 - **Antigravity** (`antigravity`): Scans `~/.gemini/config/skills`, `~/.gemini/config/plugins/*/skills`, `~/.gemini/antigravity*/builtin/skills` (`builtin:antigravity`), and project `.agent/skills`; syncs historical transcripts from `~/.gemini/antigravity*/brain/*/.system_generated/logs/transcript.jsonl` and supports live hooks in `~/.gemini/config/hooks.json`.
 - **Pi Agent** (`pi`): Scans `~/.pi/agent/skills`, `~/.pi/agent/git` & `~/.pi/agent/npm` (`plugin:pi/<pkg>`), and project `.pi/skills`; syncs session logs from `~/.pi/agent/sessions/**/*.jsonl` and supports a live extension in `~/.pi/agent/extensions/skill-usage.ts`.
 - **Hermes Agent** (`hermes`): Scans `~/.hermes/skills` (`builtin:hermes` for bundled skills in `.bundled_manifest`, `personal` for custom skills), `~/.hermes/plugins/*/skills`, and project `.hermes/skills`; syncs from `~/.hermes/state.db` and `~/.hermes/skills/.usage.json` and supports a live plugin in `~/.hermes/plugins/skill-usage/`.
+- **Codex** (`codex`): Scans `~/.codex/skills`, project `.codex/skills`, and shared `.agents/skills`; syncs historical sessions from `~/.codex/` and supports live hooks in `~/.codex/hooks.json`.
 
 ## Architecture
 
@@ -21,6 +22,7 @@ flowchart TD
         Antigravity["Antigravity"]
         Pi["Pi Agent"]
         Hermes["Hermes Agent"]
+        Codex["Codex"]
     end
 
     subgraph Ingestion ["Ingestion Channels"]
@@ -31,12 +33,14 @@ flowchart TD
             H_Agy["Antigravity hook.py"]
             H_Pi["Pi extension"]
             H_Hermes["Hermes plugin"]
+            H_Codex["Codex hook.py"]
         end
         subgraph HistSync ["Historical Log Sync (sync.py)"]
             S_Claude["Claude transcripts (*.jsonl)"]
             S_Agy["Antigravity transcripts (*.jsonl)"]
             S_Pi["Pi session logs (*.jsonl)"]
             S_Hermes["Hermes state.db & .usage.json"]
+            S_Codex["Codex session logs (*.jsonl)"]
         end
     end
 
@@ -58,8 +62,8 @@ flowchart TD
 
     subgraph InventoryScan ["Inventory Scanner (inventory.py)"]
         direction TB
-        Personal["Personal Roots (~/.copilot, ~/.claude, ~/.agents, ~/.gemini, ~/.pi, ~/.hermes)"]
-        Project["Project Roots (.github, .claude, .agents, .agent, .pi, .hermes)"]
+        Personal["Personal Roots (~/.copilot, ~/.claude, ~/.codex, ~/.agents, ~/.gemini, ~/.pi, ~/.hermes)"]
+        Project["Project Roots (.github, .claude, .codex, .agents, .agent, .pi, .hermes)"]
         Builtins["Built-ins & Plugins (Antigravity, Hermes, VS Code/Copilot, Claude, Pi)"]
         Registry["Skill Inventory Registry<br/>(personal, project, builtin, plugin)"]
     end
@@ -78,11 +82,13 @@ flowchart TD
     Antigravity --> H_Agy
     Pi --> H_Pi
     Hermes --> H_Hermes
+    Codex --> H_Codex
 
     Claude -.-> S_Claude
     Antigravity -.-> S_Agy
     Pi -.-> S_Pi
     Hermes -.-> S_Hermes
+    Codex -.-> S_Codex
 
     LiveHooks --> Filter
     HistSync --> Filter
@@ -134,18 +140,19 @@ python3 skill_usage.py sync
 
 # Print a unified or agent-filtered report (automatically syncs default data dir unless --no-sync is given)
 python3 skill_usage.py report --days 30
-python3 skill_usage.py report --days 30 --agent claude
+python3 skill_usage.py report --days 30 --agent codex
 python3 skill_usage.py report --days 90 --csv report.csv --workspace /path/to/project
 
 # Generate the standalone HTML dashboard (automatically syncs default data dir unless --no-sync is given)
 python3 skill_usage.py dashboard
 python3 skill_usage.py dashboard --data-dir data --workspace /path/to/project --output dashboard.html
 
-# Optional: install live hooks/extensions for Claude, Antigravity, Pi Agent, and Hermes Agent
+# Optional: install live hooks/extensions for Claude, Antigravity, Pi Agent, Hermes Agent, and Codex
 python3 skill_usage.py install-hooks
 ```
 
 > **Note on Manual Sync vs. Live Hooks:**
+>
 > - `report` and `dashboard` automatically run `sync` when using the default data directory, so running `python3 skill_usage.py sync` manually before reporting is **not required**.
 > - Running `python3 skill_usage.py sync` directly remains **required and recommended** for:
 >   1. Synchronizing into custom `--data-dir` locations (auto-sync is disabled when `--data-dir` is specified unless `--sync` is passed).
@@ -159,6 +166,7 @@ The dashboard writes a local standalone HTML snapshot (`skill-usage-dashboard.ht
 A slash invocation of a skill such as `/grill-me` is followed by the agent reading the skill's `SKILL.md`. The report merges that read into the slash load when it is in the same session within 120 seconds, so one invocation counts once. Raw events keep both records.
 
 ## Dashboard
+
 ![dashboard example](./assets/Dashboard_Screenshot.png)
 
 ## Data
@@ -168,11 +176,13 @@ Events are stored in `~/.copilot/skill-usage/data/events-YYYY-MM.jsonl` by defau
 ## Disable
 
 Remove the relevant hook configuration if installed:
+
 - Copilot: `~/.copilot/hooks/skill-usage.json`
 - Claude: `"hooks"` entries for `hook.py` in `~/.claude/settings.json`
 - Antigravity: `"skill-usage"` entry in `~/.gemini/config/hooks.json`
 - Pi Agent: `~/.pi/agent/extensions/skill-usage.ts`
 - Hermes Agent: `~/.hermes/plugins/skill-usage/`
+- Codex: `~/.codex/hooks.json`
 
 ## Uninstall and erase data
 
@@ -183,4 +193,3 @@ Delete the hook files above, then delete the `~/.copilot/skill-usage` folder.
 ```bash
 python3 -m unittest discover -s tests -t . -v
 ```
-

@@ -13,6 +13,7 @@ AGENT_LABELS = {
     "antigravity": "Antigravity",
     "pi": "Pi Agent",
     "hermes": "Hermes Agent",
+    "codex": "Codex",
 }
 
 
