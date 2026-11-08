@@ -55,6 +55,16 @@ class InventoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(inventory.scan(Path(tmp) / "nohome", [Path(tmp) / "nows"]), [])
 
+    def test_antigravity_cli_builtin_skills_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            make_skill(home, ".gemini", "antigravity-cli", "builtin", "skills", "cli-skill")
+            copies = inventory.scan(home, [])
+            self.assertEqual(len(copies), 1)
+            self.assertEqual(copies[0].name, "cli-skill")
+            self.assertEqual(copies[0].source, "builtin:antigravity")
+            self.assertIn("antigravity", copies[0].agents)
+
 
 if __name__ == "__main__":
     unittest.main()
