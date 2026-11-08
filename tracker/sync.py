@@ -12,7 +12,7 @@ from typing import Iterable
 from tracker import detect, inventory, store
 from tracker.report import parse_ts
 
-SYNC_AGENTS = ("claude", "antigravity", "pi", "hermes")
+SYNC_AGENTS = ("claude", "antigravity", "pi", "hermes", "codex")
 _USER_REQ_RE = re.compile(
     r"<\s*(?:USER_REQUEST|USER_PROMPT|USER_MESSAGE)(?:\s+[^>]*)?>\s*(.*?)\s*<\s*/(?:USER_REQUEST|USER_PROMPT|USER_MESSAGE)\s*>",
     re.DOTALL | re.IGNORECASE,
@@ -579,6 +579,9 @@ def collect_claude_events(home: Path, known_names: set[str]) -> list[dict]:
                                 events.append(rec)
         except OSError:
             continue
+    return events
+
+
 def _extract_codex_tool_call(d: dict) -> tuple[str, dict] | None:
     if not isinstance(d, dict):
         return None

@@ -157,7 +157,6 @@ def _record(event, type_, **extra):
     cleaned_cwd = _clean_str(cwd) if isinstance(cwd, str) else None
     workspace = os.path.basename(os.path.normpath(cleaned_cwd)) if cleaned_cwd else ""
     session_id = event.get("session_id") or event.get("sessionId") or event.get("conversationId") or ""
-    session_id = event.get("session_id") or event.get("sessionId") or event.get("conversationId") or ""
     record = {
         "type": type_,
         "ts": ts,
@@ -198,11 +197,7 @@ def _is_paginated_continuation(data: dict) -> bool:
             continue
         cleaned = _clean_str(raw) if isinstance(raw, str) else raw
         try:
-            val = int(cleaned)
-            if key.lower().replace("_", "") == "contentoffset":
-                if val > 0:
-                    return True
-            elif val > 1:
+            if int(cleaned) > 1:
                 return True
         except (TypeError, ValueError):
             pass
@@ -295,7 +290,7 @@ def _from_prompt(event, known_names):
         return None
     names = known_names()
     names_lower = {n.lower(): n for n in names}
-    for name in (match.group(2), match.group(3)):
+    for name in (match.group(2), match.group(1), match.group(3)):
         if not name:
             continue
         if name in names:
