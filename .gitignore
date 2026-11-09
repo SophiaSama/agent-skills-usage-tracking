@@ -3,7 +3,7 @@ data/
 capture/
 __pycache__/
 # project skills used for development
-.github/
+.github/skills/
 # brainstorm
 .superpowers/
 # local output
