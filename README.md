@@ -116,7 +116,7 @@ flowchart TD
 
 1. **Dual-Path Ingestion**:
    - **Live Hooks (`hook.py`)**: Intercepts events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`) in real time across agents. Completely non-blocking and fail-open.
-   - **Historical Sync (`tracker/sync.py`)**: Parses transcripts and state databases across Claude, Antigravity, Pi Agent, and Hermes Agent. Sync recovers pre-hook history, unhooked agent sessions, missed events, and events not exposed to live hooks (such as Antigravity slash commands and Hermes `.usage.json`). An automated 30-second timestamp deduplication window prevents duplicate events when both hooks and sync are active.
+   - **Historical Sync (`tracker/sync.py`)**: Parses transcripts and state databases across Claude, Antigravity, Pi Agent, Hermes Agent, and Codex. Sync recovers pre-hook history, unhooked agent sessions, missed events, and events not exposed to live hooks (such as Antigravity slash commands and Hermes `.usage.json`). An automated 30-second timestamp deduplication window prevents duplicate events when both hooks and sync are active.
 2. **Detection & Classification (`tracker/detect.py`)**:
    - `agent-read`: Tool read calls accessing a `SKILL.md` inside a skill directory (skips pagination/continuation calls).
    - `user-slash`: User prompts starting with `/<skill>` or `/<plugin> <skill>` matching known skill names.
@@ -135,8 +135,9 @@ flowchart TD
 ## Use
 
 ```bash
-# Sync usage from Claude, Antigravity, Pi Agent, and Hermes Agent logs (optional: report & dashboard auto-sync by default)
+# Sync usage from Claude, Antigravity, Pi Agent, Hermes Agent, and Codex logs (optional: report & dashboard auto-sync by default)
 python3 skill_usage.py sync
+python3 skill_usage.py sync --agent codex
 
 # Print a unified or agent-filtered report (automatically syncs default data dir unless --no-sync is given)
 python3 skill_usage.py report --days 30
@@ -145,22 +146,24 @@ python3 skill_usage.py report --days 90 --csv report.csv --workspace /path/to/pr
 
 # Generate the standalone HTML dashboard (automatically syncs default data dir unless --no-sync is given)
 python3 skill_usage.py dashboard
+python3 skill_usage.py dashboard --agent codex --output codex-dashboard.html
 python3 skill_usage.py dashboard --data-dir data --workspace /path/to/project --output dashboard.html
 
 # Optional: install live hooks/extensions for Claude, Antigravity, Pi Agent, Hermes Agent, and Codex
 python3 skill_usage.py install-hooks
+python3 skill_usage.py install-hooks --agent codex
 ```
 
 > **Note on Manual Sync vs. Live Hooks:**
 >
-> - `report` and `dashboard` automatically run `sync` when using the default data directory, so running `python3 skill_usage.py sync` manually before reporting is **not required**.
+> - `report` and `dashboard` automatically run `sync` when using the default data directory, so running `python3 skill_usage.py sync` manually before reporting is **not required** (use `--no-sync` to skip auto-sync, or `--sync` to force sync when `--data-dir` is specified).
 > - Running `python3 skill_usage.py sync` directly remains **required and recommended** for:
 >   1. Synchronizing into custom `--data-dir` locations (auto-sync is disabled when `--data-dir` is specified unless `--sync` is passed).
 >   2. Standalone periodic sync jobs or background scripts without rendering reports or dashboards.
 >   3. Inspecting synchronization feedback (prints newly synced counts per agent).
 >   4. Backfilling historical events from sessions run before hooks were installed, or capturing events from unhooked agents and events not exposed to live hooks (such as Antigravity prompt submissions).
 
-The dashboard writes a local standalone HTML snapshot (`skill-usage-dashboard.html` in the current directory by default). Open it directly in a browser and use the **Agent** selector (`All agents`, `Copilot`, `Claude`, `Antigravity`, `Pi Agent`, `Hermes Agent`) or **Show -> Exclude built-in** to inspect specific agents and custom skills.
+The dashboard writes a local standalone HTML snapshot (`skill-usage-dashboard.html` in the current directory by default). Open it directly in a browser and use the **Agent** selector (`All agents`, `Copilot`, `Claude`, `Antigravity`, `Pi Agent`, `Hermes Agent`, `Codex`) or **Show -> Exclude built-in** to inspect specific agents and custom skills.
 `--workspace` can be repeated to add project skill roots, `--data-dir` selects the event directory, `--agent` filters by agent, and `--output` selects the HTML path. The dashboard contains skill names and aggregate usage metadata, not skill contents or filesystem paths. Inventory reflects the time the dashboard is generated; “not observed” is not evidence that a skill is unnecessary, and an unmatched load only means there is no current inventory match.
 
 A slash invocation of a skill such as `/grill-me` is followed by the agent reading the skill's `SKILL.md`. The report merges that read into the slash load when it is in the same session within 120 seconds, so one invocation counts once. Raw events keep both records.
