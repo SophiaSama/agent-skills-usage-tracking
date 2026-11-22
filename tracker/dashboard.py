@@ -5,12 +5,35 @@ from tracker import inventory, report
 DASHBOARD_AGENTS = ("all",) + inventory.ALL_AGENTS
 
 
+def _format_eval_payload(row: report.Row) -> dict | None:
+    ev = row.eval_summary
+    if ev is None:
+        return None
+    return {
+        "score": ev.get("with_skill_rate"),
+        "baseline": ev.get("baseline_rate"),
+        "delta": ev.get("benefit_delta"),
+        "source": ev.get("eval_source"),
+        "cases": ev.get("cases_total"),
+        "ts": ev.get("ts"),
+    }
+
+
 def _range_data(summary):
+    enough = report.meets_threshold(summary, 30, 20)
     skills = []
     unmatched = []
+    eval_scores = []
+    eval_deltas = []
     for row in summary.rows:
         if row.copies:
             copy_agents = sorted({ag for copy in row.copies for ag in getattr(copy, "agents", ("copilot",))})
+            ev_payload = _format_eval_payload(row)
+            if ev_payload is not None:
+                if ev_payload["score"] is not None:
+                    eval_scores.append(float(ev_payload["score"]))
+                if ev_payload["delta"] is not None:
+                    eval_deltas.append(float(ev_payload["delta"]))
             skills.append(
                 {
                     "name": row.name,
@@ -23,6 +46,8 @@ def _range_data(summary):
                     "sessions": len(row.sessions),
                     "last": row.last.isoformat() if row.last else None,
                     "observed": row.total > 0,
+                    "eval": ev_payload,
+                    "usefulness": report.usefulness_label(row, enough),
                 }
             )
         elif row.total:
@@ -43,16 +68,21 @@ def _range_data(summary):
             "observedSkills": observed,
             "notObservedSkills": len(skills) - observed,
         },
+        "evalSummary": {
+            "evaluatedSkills": sum(1 for skill in skills if skill["eval"] is not None),
+            "avgScore": round(sum(eval_scores) / len(eval_scores), 4) if eval_scores else None,
+            "avgBenefitDelta": round(sum(eval_deltas) / len(eval_deltas), 4) if eval_deltas else None,
+        },
         "skills": skills,
         "unmatched": unmatched,
     }
 
 
-def build_dashboard_data(events, copies, now):
+def build_dashboard_data(events, copies, now, evals: list[dict] | None = None):
     agents_data = {}
     for ag in DASHBOARD_AGENTS:
-        recent = report.summarize(events, copies, now, 30, agent=ag)
-        history = report.summarize_all(events, copies, now, agent=ag)
+        recent = report.summarize(events, copies, now, 30, agent=ag, evals=evals)
+        history = report.summarize_all(events, copies, now, agent=ag, evals=evals)
         agents_data[ag] = {
             "30d": _range_data(recent),
             "all": _range_data(history),
@@ -80,7 +110,7 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 .panel{padding:22px;margin:16px 0}.panel h2{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}.panel-intro{margin:0 0 16px;color:var(--muted);font-size:13px}
 .legend{display:flex;flex-wrap:wrap;gap:14px;margin:13px 0 17px;color:var(--muted);font-size:12px}.legend span{display:inline-flex;align-items:center;gap:6px}.swatch{width:10px;height:10px;border-radius:3px;display:inline-block}.agent-read{background:var(--blue)}.user-slash{background:var(--green)}.skill-tool{background:var(--gold)}
 .chart{display:grid;gap:11px}.chart-row{display:grid;grid-template-columns:minmax(120px,220px) 1fr 74px;gap:12px;align-items:center}.chart-name{overflow-wrap:anywhere;font-size:13px;font-weight:650}.bar-track{height:15px;background:#edf0f5;border-radius:99px;display:flex;overflow:hidden}.bar-segment{height:100%;min-width:0}.bar-total{text-align:right;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.zero-label{color:var(--muted);font-size:12px}
-.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:900px;font-size:13px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);white-space:nowrap}td.num{font-variant-numeric:tabular-nums;text-align:right}.status{display:inline-block;padding:2px 8px;border-radius:999px;background:#edf1f7;font-size:11px;font-weight:700;white-space:nowrap}.status.observed{background:#e6f4ef;color:#246b55}.source-tags{color:var(--muted);overflow-wrap:anywhere}.empty{padding:12px 14px;background:#f2f5fa;border-radius:9px;color:var(--muted);font-size:13px}.note{color:var(--muted);font-size:13px}.unmatched-table{min-width:580px}.footer{color:var(--muted);font-size:12px;margin-top:22px}
+.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:980px;font-size:13px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);white-space:nowrap}td.num{font-variant-numeric:tabular-nums;text-align:right}.status{display:inline-block;padding:2px 8px;border-radius:999px;background:#edf1f7;font-size:11px;font-weight:700;white-space:nowrap}.status.observed,.status.high-value{background:#e6f4ef;color:#246b55}.status.under-triggered{background:#eaf0fc;color:#174b9f}.status.low-benefit{background:#fdecea;color:#9b2c2c}.source-tags{color:var(--muted);overflow-wrap:anywhere}.empty{padding:12px 14px;background:#f2f5fa;border-radius:9px;color:var(--muted);font-size:13px}.note{color:var(--muted);font-size:13px}.unmatched-table{min-width:580px}.footer{color:var(--muted);font-size:12px;margin-top:22px}
 @media(max-width:760px){main{padding:28px 16px 44px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-row{grid-template-columns:minmax(90px,150px) 1fr 58px;gap:8px}.panel{padding:17px}}
 @media(max-width:420px){.cards{gap:8px}.card{padding:13px}.card strong{font-size:24px}.chart-row{grid-template-columns:1fr 54px}.chart-name{grid-column:1/-1}}
 </style>
@@ -88,7 +118,7 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <body>
 <main>
 <header><div class="eyebrow">Local snapshot</div><h1>Copilot Skill Usage</h1>
-<p class="lede">Observed skill-load metadata alongside the inventory scanned when this dashboard was generated.</p></header>
+<p class="lede">Observed skill-load metadata and evaluation scores alongside the inventory scanned when this dashboard was generated.</p></header>
 <div class="toolbar">
 <div class="control-group" id="agent-control" role="group" aria-label="Agent">
 <span class="control-label">Agent</span><button type="button" data-agent="all" aria-pressed="true">All agents</button><button type="button" data-agent="copilot" aria-pressed="false">Copilot</button><button type="button" data-agent="claude" aria-pressed="false">Claude</button><button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button><button type="button" data-agent="pi" aria-pressed="false">Pi Agent</button><button type="button" data-agent="hermes" aria-pressed="false">Hermes Agent</button><button type="button" data-agent="codex" aria-pressed="false">Codex</button>
@@ -97,7 +127,7 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <span class="control-label">Time range</span><button type="button" data-range="30d" aria-pressed="true">Last 30 days</button><button type="button" data-range="all" aria-pressed="false">All recorded history</button>
 </div>
 <div class="control-group" id="filter-control" role="group" aria-label="Skill filter">
-<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="non-builtin" aria-pressed="false">Exclude built-in</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
+<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="evaluated" aria-pressed="false">Evaluated</button><button type="button" data-filter="non-builtin" aria-pressed="false">Exclude built-in</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
 </div></div>
 <section class="cards" aria-label="Summary">
 <div class="card"><span>Installed skills</span><strong id="installed-count">0</strong></div><div class="card"><span>Recorded loads</span><strong id="load-count">0</strong></div><div class="card"><span>Observed skills</span><strong id="observed-count">0</strong></div><div class="card"><span>Not observed</span><strong id="not-observed-count">0</strong></div></section>
@@ -105,8 +135,8 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <p id="empty-inventory" class="empty" hidden>No skills were found in the current inventory. Unmatched recorded loads may still be listed below.</p>
 <section class="panel"><h2>Loads by skill</h2><p class="panel-intro">Each bar is split by load source. Every current inventory skill is included, including zero-load skills.</p>
 <div class="legend" aria-label="Load source legend"><span><i class="swatch agent-read"></i>Agent read</span><span><i class="swatch user-slash"></i>User slash</span><span><i class="swatch skill-tool"></i>Skill tool</span></div><div id="chart" class="chart"></div><p id="empty-filtered-chart" class="empty" hidden>No inventoried skills match this filter.</p></section>
-<section class="panel"><h2>Skill details</h2><p class="panel-intro">Not observed means no loads were recorded in the selected range; it does not mean a skill is unnecessary.</p>
-<div class="table-scroll"><table><thead><tr><th>Skill</th><th>Copies</th><th>Inventory sources</th><th>Agent read</th><th>User slash</th><th>Skill tool</th><th>Total</th><th>Sessions</th><th>Last load</th><th>Status</th></tr></thead><tbody id="skills-table"></tbody></table></div><p id="empty-filtered-table" class="empty" hidden>No inventoried skills match this filter.</p></section>
+<section class="panel"><h2>Skill details</h2><p class="panel-intro">Not observed means no loads were recorded in the selected range; eval scores show with-skill pass rate and lift over baseline.</p>
+<div class="table-scroll"><table><thead><tr><th>Skill</th><th>Copies</th><th>Inventory sources</th><th>Agent read</th><th>User slash</th><th>Skill tool</th><th>Total</th><th>Sessions</th><th>Last load</th><th>Eval score</th><th>Benefit</th><th>Status</th></tr></thead><tbody id="skills-table"></tbody></table></div><p id="empty-filtered-table" class="empty" hidden>No inventoried skills match this filter.</p></section>
 <section id="unmatched-section" class="panel"><h2>Unmatched loads</h2><p class="panel-intro">An unmatched name has no current inventory match. It may have been removed, renamed, or be outside scanned locations; historical inventory snapshots are not retained, so the cause is unknown.</p>
 <div class="table-scroll"><table class="unmatched-table"><thead><tr><th>Recorded skill name</th><th>Loads</th><th>Load sources</th><th>Last seen</th></tr></thead><tbody id="unmatched-table"></tbody></table></div><p id="empty-unmatched" class="empty" hidden>No unmatched loads in this range.</p></section>
 <p class="footer">This file is a generated snapshot. It contains skill names and aggregate usage metadata only. No data is uploaded or refreshed automatically.</p>
@@ -134,6 +164,17 @@ function cell(row, value, className) {
     row.appendChild(node);
 }
 
+function fmtPct(val) {
+    if (val === null || val === undefined) return "—";
+    return Math.round(val * 100) + "%";
+}
+
+function fmtDelta(val) {
+    if (val === null || val === undefined) return "—";
+    const pct = Math.round(val * 100);
+    return (pct >= 0 ? "+" : "") + pct + "%";
+}
+
 function render() {
     const agentRanges = (dashboardData.agents && dashboardData.agents[selectedAgent]) || dashboardData.ranges;
     const view = agentRanges[selectedRange];
@@ -147,6 +188,7 @@ function render() {
 
     const skills = selectedFilter === "observed" ? view.skills.filter(skill => skill.observed)
         : selectedFilter === "not-observed" ? view.skills.filter(skill => !skill.observed)
+        : selectedFilter === "evaluated" ? view.skills.filter(skill => skill.eval !== null && skill.eval !== undefined)
         : selectedFilter === "non-builtin" ? view.skills.filter(skill => !skill.sources.every(s => s.startsWith("builtin:")))
         : selectedFilter === "unmatched" ? [] : view.skills;
     const chart = document.getElementById("chart");
@@ -181,8 +223,16 @@ function render() {
         cell(tr, skill.total, "num");
         cell(tr, skill.sessions, "num");
         cell(tr, skill.last ? skill.last.slice(0, 10) : "—");
+        const ev = skill.eval;
+        cell(tr, ev ? fmtPct(ev.score) : "—", "num");
+        cell(tr, ev ? fmtDelta(ev.delta) : "—", "num");
         const status = element("td");
-        status.appendChild(element("span", skill.observed ? "status observed" : "status", skill.observed ? "Observed" : "Not observed"));
+        const label = skill.usefulness || (skill.observed ? "observed" : "not-observed");
+        const badgeText = label === "observed" ? "Observed" : label === "not-observed" ? "Not observed" : label;
+        const badgeClass = label === "observed" || label === "high-value" ? "status " + label
+            : label === "under-triggered" || label === "low-benefit" ? "status " + label
+            : "status";
+        status.appendChild(element("span", badgeClass, badgeText));
         tr.appendChild(status);
         table.appendChild(tr);
     }
@@ -233,8 +283,8 @@ render();
 
 
 def render_html(data):
-        import json
+    import json
 
-        payload = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
-        payload = payload.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
-        return _HTML_PREFIX + payload + _HTML_SUFFIX
+    payload = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
+    payload = payload.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+    return _HTML_PREFIX + payload + _HTML_SUFFIX

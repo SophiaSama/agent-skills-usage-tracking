@@ -4,6 +4,8 @@ import csv
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from tracker import store
+
 SOURCES = ("agent-read", "user-slash", "skill-tool")
 PAIR_SECONDS = 120
 AGENT_LABELS = {
@@ -41,6 +43,7 @@ class Row:
     last: datetime | None = None
     agents: set = field(default_factory=set)
     by_agent: dict = field(default_factory=dict)
+    eval_summary: dict | None = None
 
     @property
     def total(self):
@@ -58,17 +61,18 @@ class Summary:
     merged: int = 0
     agent: str | None = None
     by_agent: dict = field(default_factory=dict)
+    has_evals: bool = False
 
 
-def summarize(events, copies, now, days, agent: str | None = None):
-    return _summarize(events, copies, now, days, agent=agent)
+def summarize(events, copies, now, days, agent: str | None = None, evals: list[dict] | None = None):
+    return _summarize(events, copies, now, days, agent=agent, evals=evals)
 
 
-def summarize_all(events, copies, now, agent: str | None = None):
-    return _summarize(events, copies, now, None, agent=agent)
+def summarize_all(events, copies, now, agent: str | None = None, evals: list[dict] | None = None):
+    return _summarize(events, copies, now, None, agent=agent, evals=evals)
 
 
-def _summarize(events, copies, now, days, agent: str | None = None):
+def _summarize(events, copies, now, days, agent: str | None = None, evals: list[dict] | None = None):
     if agent is not None and agent != "all":
         events = [e for e in events if event_agent(e) == agent]
         copies = [c for c in copies if agent in getattr(c, "agents", ("copilot",))]
@@ -120,6 +124,14 @@ def _summarize(events, copies, now, days, agent: str | None = None):
         if row.last is None or stamp > row.last:
             row.last = stamp
 
+    latest_evals = store.latest_evals_by_skill(evals or [], agent=agent)
+    has_evals = False
+    for row in by_name.values():
+        ev = latest_evals.get(row.name.lower())
+        if ev is not None:
+            row.eval_summary = ev
+            has_evals = True
+
     rows = sorted(by_name.values(), key=lambda r: (-r.total, r.name))
     window_days = min(days, coverage_days) if days is not None else coverage_days
     return Summary(
@@ -132,11 +144,51 @@ def _summarize(events, copies, now, days, agent: str | None = None):
         merged,
         agent=agent,
         by_agent=by_agent,
+        has_evals=has_evals,
     )
 
 
 def meets_threshold(summary, min_days, min_sessions):
     return summary.window_days >= min_days and len(summary.sessions) >= min_sessions
+
+
+def usefulness_label(row: Row, enough: bool) -> str:
+    """Combine load evidence with eval lift to classify skill usefulness."""
+    ev = row.eval_summary
+    if ev is None:
+        if row.total:
+            return "loaded" if row.copies else "unmatched"
+        return "review-candidate" if enough else "not-observed"
+
+    delta = ev.get("benefit_delta")
+    rate = ev.get("with_skill_rate")
+    strong_lift = (delta is not None and delta >= 0.15) or (delta is None and rate is not None and rate >= 0.7)
+    no_lift = (delta is not None and delta <= 0.0) or (delta is None and rate is not None and rate < 0.5)
+
+    if row.total:
+        if strong_lift:
+            return "high-value"
+        if no_lift:
+            return "low-benefit"
+        return "neutral"
+    if strong_lift:
+        return "under-triggered"
+    if no_lift and enough:
+        return "review-candidate"
+    return "not-observed"
+
+
+def _fmt_pct(val) -> str:
+    if val is None:
+        return "—"
+    return f"{round(float(val) * 100)}%"
+
+
+def _fmt_delta(val) -> str:
+    if val is None:
+        return "—"
+    pct = round(float(val) * 100)
+    return f"+{pct}%" if pct >= 0 else f"{pct}%"
 
 
 def _sources(row):
@@ -176,21 +228,45 @@ def render(summary, min_days, min_sessions):
         out += [f"{summary.merged} agent reads were merged into the slash load that triggered them.", ""]
     loaded = [r for r in summary.rows if r.total]
     if loaded:
-        out.append("| Skill | Copies | agent-read | user-slash | skill-tool | Total | Sessions | Last load |")
-        out.append("|---|---|---|---|---|---|---|---|")
-        for r in loaded:
-            c = r.counts
-            out.append(
-                f"| {r.name} | {len(r.copies)} | {c['agent-read']} | {c['user-slash']} | {c['skill-tool']} "
-                f"| {r.total} | {len(r.sessions)} | {r.last.date().isoformat()} |"
-            )
+        if summary.has_evals:
+            out.append("| Skill | Copies | agent-read | user-slash | skill-tool | Total | Sessions | Last load | Eval | Benefit |")
+            out.append("|---|---|---|---|---|---|---|---|---|---|")
+            for r in loaded:
+                c = r.counts
+                ev = r.eval_summary or {}
+                ev_str = _fmt_pct(ev.get("with_skill_rate"))
+                delta_str = _fmt_delta(ev.get("benefit_delta"))
+                out.append(
+                    f"| {r.name} | {len(r.copies)} | {c['agent-read']} | {c['user-slash']} | {c['skill-tool']} "
+                    f"| {r.total} | {len(r.sessions)} | {r.last.date().isoformat()} | {ev_str} | {delta_str} |"
+                )
+        else:
+            out.append("| Skill | Copies | agent-read | user-slash | skill-tool | Total | Sessions | Last load |")
+            out.append("|---|---|---|---|---|---|---|---|")
+            for r in loaded:
+                c = r.counts
+                out.append(
+                    f"| {r.name} | {len(r.copies)} | {c['agent-read']} | {c['user-slash']} | {c['skill-tool']} "
+                    f"| {r.total} | {len(r.sessions)} | {r.last.date().isoformat()} |"
+                )
     else:
         out.append("No loads recorded in this window.")
 
     idle = [r for r in summary.rows if not r.total and r.copies]
     heading = "## Review candidates (not observed)" if enough else "## Not observed (insufficient data)"
     out += ["", heading, ""]
-    out += [f"- {r.name} ({_sources(r)})" for r in idle] or ["None."]
+    if idle:
+        for r in idle:
+            line = f"- {r.name} ({_sources(r)})"
+            if r.eval_summary is not None:
+                ev = r.eval_summary
+                line += (
+                    f" — eval {_fmt_pct(ev.get('with_skill_rate'))}, "
+                    f"{_fmt_delta(ev.get('benefit_delta'))} benefit ({usefulness_label(r, enough)})"
+                )
+            out.append(line)
+    else:
+        out.append("None.")
 
     dupes = [r for r in summary.rows if len(r.copies) > 1]
     out += ["", "## Duplicate names", ""]
@@ -209,13 +285,32 @@ def write_csv(summary, path, enough):
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["skill", "copies", "sources", "paths", "agent_read", "user_slash", "skill_tool", "total_loads", "sessions", "last_load", "status"]
+            [
+                "skill",
+                "copies",
+                "sources",
+                "paths",
+                "agent_read",
+                "user_slash",
+                "skill_tool",
+                "total_loads",
+                "sessions",
+                "last_load",
+                "status",
+                "eval_score",
+                "baseline_score",
+                "benefit_delta",
+                "eval_source",
+                "usefulness",
+                "last_eval",
+            ]
         )
         for r in summary.rows:
             if r.total:
                 status = "loaded" if r.copies else "unmatched"
             else:
                 status = "review-candidate" if enough else "not-observed"
+            ev = r.eval_summary or {}
             writer.writerow(
                 [
                     r.name,
@@ -229,5 +324,11 @@ def write_csv(summary, path, enough):
                     len(r.sessions),
                     r.last.isoformat() if r.last else "",
                     status,
+                    ev.get("with_skill_rate") if ev.get("with_skill_rate") is not None else "",
+                    ev.get("baseline_rate") if ev.get("baseline_rate") is not None else "",
+                    ev.get("benefit_delta") if ev.get("benefit_delta") is not None else "",
+                    ev.get("eval_source", ""),
+                    usefulness_label(r, enough),
+                    ev.get("ts", ""),
                 ]
             )

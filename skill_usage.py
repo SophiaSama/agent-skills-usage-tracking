@@ -1,9 +1,10 @@
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tracker import dashboard, inventory, report, store, sync
+from tracker import dashboard, evals, inventory, report, store, sync
 
 AGENT_CHOICES = ("all",) + inventory.ALL_AGENTS
 SYNC_AGENT_CHOICES = ("all",) + sync.SYNC_AGENTS
@@ -18,6 +19,147 @@ def _maybe_sync(args, home: Path, workspaces: list[Path]) -> None:
         return
     agents = (agent_arg,) if agent_arg in sync.SYNC_AGENTS else None
     sync.sync_events(data_dir=args.data_dir, home=home, workspaces=workspaces, agents=agents)
+
+
+def _handle_eval(args, home: Path) -> int:
+    workspaces = args.workspace or [Path.cwd()]
+    agent_filter = args.agent if args.agent != "all" else None
+    copies = inventory.scan(home, workspaces, agent=agent_filter)
+    evals_dir = args.evals_dir or store.default_evals_dir()
+
+    if args.lint_only:
+        seen = set()
+        lint_results = []
+        for copy in copies:
+            key = (copy.name.lower(), copy.path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if args.skill and copy.name.lower() != args.skill.lower():
+                continue
+            lint_results.append(evals.lint_skill(copy))
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "skill": r.skill,
+                            "path": r.path,
+                            "ok": r.ok,
+                            "issues": r.issues,
+                            "has_provider_evals": r.has_provider_evals,
+                        }
+                        for r in lint_results
+                    ],
+                    indent=2,
+                )
+            )
+        else:
+            for r in lint_results:
+                status = "OK" if r.ok else f"ISSUES ({'; '.join(r.issues)})"
+                ev_tag = " [has evals]" if r.has_provider_evals else ""
+                print(f"- {r.skill}: {status}{ev_tag}")
+        return 0 if all(r.ok for r in lint_results) else 1
+
+    target_skills: list[str] = []
+    if args.skill:
+        target_skills = [args.skill]
+    elif args.all:
+        seen_names: set[str] = set()
+        for copy in copies:
+            if copy.name.lower() in seen_names:
+                continue
+            found, _ = evals.discover_eval_file(copy.name, copies, evals_dir=evals_dir)
+            if found is not None:
+                seen_names.add(copy.name.lower())
+                target_skills.append(copy.name)
+    else:
+        print("error: specify --skill <name>, --all, or --lint-only", file=sys.stderr)
+        return 2
+
+    if not target_skills:
+        print("No skills with eval suites found.")
+        return 0
+
+    judge = evals.build_judge(args.judge_cmd) if args.judge_cmd else None
+    results = []
+    for skill_name in target_skills:
+        matching = [c for c in copies if c.name.lower() == skill_name.lower()]
+        skill_dir = Path(matching[0].path).parent if matching else None
+        runner = None
+        runner_label = args.runner or args.agent
+        if not args.dry_run:
+            try:
+                runner, runner_label = evals.build_cli_runner(
+                    runner_name=args.runner or (None if args.agent == "all" else args.agent),
+                    runner_cmd=args.runner_cmd,
+                    skill_dir=skill_dir,
+                )
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+        try:
+            res = evals.run_skill_eval(
+                skill_name,
+                copies,
+                runner=runner,
+                judge=judge,
+                eval_file=args.eval_file,
+                evals_dir=evals_dir,
+                run_baseline=not args.no_baseline,
+                dry_run=args.dry_run,
+                agent=args.agent,
+                runner_label=runner_label,
+            )
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not args.dry_run:
+            store.append_eval(evals.eval_record_from_run(res), data_dir=args.data_dir)
+        results.append(res)
+
+    if args.json:
+        print(json.dumps([evals.eval_record_from_run(r) for r in results], indent=2))
+    else:
+        for r in results:
+            if r.dry_run:
+                print(f"[dry-run] {r.skill}: {r.cases_total} cases ({r.eval_source}: {r.eval_path})")
+                continue
+            score_pct = f"{round((r.with_skill_rate or 0) * 100)}%"
+            base_part = (
+                f", baseline {round(r.baseline_rate * 100)}%, benefit {round((r.benefit_delta or 0) * 100):+d}%"
+                if r.baseline_rate is not None
+                else ""
+            )
+            print(f"{r.skill} ({r.eval_source}): {r.with_skill_passed}/{r.cases_total} passed ({score_pct}{base_part})")
+    return 0
+
+
+def _handle_eval_record(args) -> int:
+    if not 0.0 <= args.score <= 1.0:
+        print("error: --score must be between 0.0 and 1.0", file=sys.stderr)
+        return 2
+    if args.baseline is not None and not 0.0 <= args.baseline <= 1.0:
+        print("error: --baseline must be between 0.0 and 1.0", file=sys.stderr)
+        return 2
+    delta = round(args.score - args.baseline, 4) if args.baseline is not None else None
+    record = {
+        "type": "eval",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "skill": args.skill,
+        "agent": args.agent,
+        "runner": "manual",
+        "eval_source": args.source,
+        "cases_total": args.cases,
+        "with_skill_passed": round(args.score * args.cases),
+        "with_skill_rate": round(args.score, 4),
+        "baseline_passed": round(args.baseline * args.cases) if args.baseline is not None else None,
+        "baseline_rate": round(args.baseline, 4) if args.baseline is not None else None,
+        "benefit_delta": delta,
+    }
+    store.append_eval(record, data_dir=args.data_dir)
+    print(f"Recorded eval for {args.skill}: score={args.score:.0%}" + (f", benefit={delta:+.0%}" if delta is not None else ""))
+    return 0
 
 
 def main(argv=None):
@@ -51,8 +193,39 @@ def main(argv=None):
     inst = sub.add_parser("install-hooks", help="install live usage-tracking hooks/extensions for local agents")
     inst.add_argument("--agent", choices=SYNC_AGENT_CHOICES, default="all", help="install hook for a specific agent")
 
+    ev = sub.add_parser("eval", help="run A/B skill evaluations or static skill lint checks")
+    ev.add_argument("--skill", help="skill name to evaluate")
+    ev.add_argument("--all", action="store_true", help="evaluate all inventoried skills that have eval suites")
+    ev.add_argument("--agent", choices=AGENT_CHOICES, default="all", help="target agent context")
+    ev.add_argument("--runner", choices=tuple(evals.DEFAULT_CLI_RUNNERS), help="CLI runner adapter to execute prompts")
+    ev.add_argument("--runner-cmd", help="custom command template containing {prompt}")
+    ev.add_argument("--judge-cmd", help="optional LLM-as-judge command template containing {prompt}")
+    ev.add_argument("--eval-file", type=Path, help="explicit evals.json path")
+    ev.add_argument("--evals-dir", type=Path, help="directory of user-authored <skill>.json eval suites")
+    ev.add_argument("--workspace", action="append", default=[], type=Path)
+    ev.add_argument("--data-dir", type=Path)
+    ev.add_argument("--no-baseline", action="store_true", help="skip without-skill baseline arm")
+    ev.add_argument("--dry-run", action="store_true", help="validate eval discovery without running any agent CLI")
+    ev.add_argument("--lint-only", action="store_true", help="run static SKILL.md health checks only")
+    ev.add_argument("--json", action="store_true", help="print JSON output")
+
+    ev_rec = sub.add_parser("eval-record", help="record an eval result into the local evals store")
+    ev_rec.add_argument("--skill", required=True)
+    ev_rec.add_argument("--score", required=True, type=float, help="with-skill pass rate (0.0 to 1.0)")
+    ev_rec.add_argument("--baseline", type=float, help="without-skill baseline pass rate (0.0 to 1.0)")
+    ev_rec.add_argument("--source", choices=("provider", "user", "external"), default="user")
+    ev_rec.add_argument("--cases", type=int, default=1)
+    ev_rec.add_argument("--agent", choices=AGENT_CHOICES, default="all")
+    ev_rec.add_argument("--data-dir", type=Path)
+
     args = parser.parse_args(argv)
     home = Path.home()
+
+    if args.command == "eval":
+        return _handle_eval(args, home)
+
+    if args.command == "eval-record":
+        return _handle_eval_record(args)
 
     if args.command == "sync":
         workspaces = args.workspace or [Path.cwd()]
@@ -74,9 +247,10 @@ def main(argv=None):
         output = args.output or Path.cwd() / "skill-usage-dashboard.html"
         _maybe_sync(args, home, workspaces)
         events = store.read_events(args.data_dir)
+        eval_records = store.read_evals(args.data_dir)
         copies = inventory.scan(home, workspaces, agent=args.agent if args.agent != "all" else None)
         now = datetime.now(timezone.utc)
-        html = dashboard.render_html(dashboard.build_dashboard_data(events, copies, now))
+        html = dashboard.render_html(dashboard.build_dashboard_data(events, copies, now, evals=eval_records))
         try:
             output.write_text(html, encoding="utf-8")
         except OSError as exc:
@@ -88,10 +262,11 @@ def main(argv=None):
     workspaces = args.workspace or [Path.cwd()]
     _maybe_sync(args, home, workspaces)
     events = store.read_events(args.data_dir)
+    eval_records = store.read_evals(args.data_dir)
     agent_filter = args.agent if args.agent != "all" else None
     copies = inventory.scan(home, workspaces, agent=agent_filter)
     now = datetime.now(timezone.utc)
-    summary = report.summarize(events, copies, now, args.days, agent=agent_filter)
+    summary = report.summarize(events, copies, now, args.days, agent=agent_filter, evals=eval_records)
     print(report.render(summary, args.min_days, args.min_sessions))
     if args.csv:
         enough = report.meets_threshold(summary, args.min_days, args.min_sessions)
@@ -107,4 +282,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
