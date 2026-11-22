@@ -131,6 +131,11 @@ flowchart TD
 5. **Deduplication & Reporting (`tracker/report.py`, `tracker/dashboard.py`)**:
    - **Slash-Read Pairing**: A `/skill` invocation followed by an `agent-read` of the same skill within 120 seconds in the same session is merged into a single counted load in reports.
    - **Evaluation Thresholds**: A skill with zero observed loads is labeled `insufficient data` until tracking covers at least 30 days and 20 sessions before being flagged as a `review candidate`.
+   - **Usefulness Classification**: When eval scores are recorded, load counts and baseline lift (`benefit_delta`) are combined into `high-value`, `under-triggered`, `low-benefit`, `neutral`, or `review-candidate`.
+6. **Skill Evaluations & Lint (`tracker/evals.py`)**:
+   - **Eval Discovery**: Looks for user-authored suites in `~/.copilot/skill-usage/evals/<skill>.json` (`$SKILL_USAGE_EVALS`) first, then provider-bundled `evals/evals.json` (or `evals.json`) inside each skill folder.
+   - **A/B Runner**: Runs each prompt with the skill instructions (`with-skill`) and without (`baseline`) in isolated temp directories using a local agent CLI (`claude`, `codex`, `copilot`, `gemini`, `pi`, `hermes`) or `--runner-cmd`, grading deterministic assertions (`contains`, `not_contains`, `regex`, `file_exists`, `file_contains`, `json_valid`, `command`) or an optional `--judge-cmd`.
+   - **Static Health Lint**: Checks `SKILL.md` frontmatter (`name`, `description`) and relative links without invoking any LLM.
 
 ## Use
 
@@ -152,6 +157,16 @@ python3 skill_usage.py dashboard --data-dir data --workspace /path/to/project --
 # Optional: install live hooks/extensions for Claude, Antigravity, Pi Agent, Hermes Agent, and Codex
 python3 skill_usage.py install-hooks
 python3 skill_usage.py install-hooks --agent codex
+
+# Static health lint across installed skills (no LLM calls)
+python3 skill_usage.py eval --lint-only
+
+# Run A/B evals (with-skill vs. baseline) for a skill or all skills with evals.json
+python3 skill_usage.py eval --skill my-skill --runner claude
+python3 skill_usage.py eval --all --dry-run
+
+# Or record an external/manual eval score into usage tracking
+python3 skill_usage.py eval-record --skill my-skill --score 0.9 --baseline 0.4 --cases 10
 ```
 
 > **Note on Manual Sync vs. Live Hooks:**
@@ -174,7 +189,7 @@ A slash invocation of a skill such as `/grill-me` is followed by the agent readi
 
 ## Data
 
-Events are stored in `~/.copilot/skill-usage/data/events-YYYY-MM.jsonl` by default (or `$SKILL_USAGE_DATA` / `--data-dir`), containing metadata only: time, session ID, workspace folder name, agent, skill, and load source. Hook failures are logged by error type in `hook-errors.log`. Nothing leaves this machine and nothing is deleted automatically.
+Events are stored in `~/.copilot/skill-usage/data/events-YYYY-MM.jsonl` and eval summaries in `evals-YYYY-MM.jsonl` by default (or `$SKILL_USAGE_DATA` / `--data-dir`), containing metadata only: time, session ID, workspace folder name, agent, skill, load source, and aggregate eval scores (never prompts or model outputs). User-authored eval suites live in `~/.copilot/skill-usage/evals/<skill>.json` (or `$SKILL_USAGE_EVALS`). Hook failures are logged by error type in `hook-errors.log`. Nothing leaves this machine and nothing is deleted automatically.
 
 ## Disable
 
