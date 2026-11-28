@@ -46,6 +46,15 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(rec["workspace"], "mc_sw")
         self.assertEqual(rec["ts"], TS)
 
+    def test_antigravity_read_file_path_shape(self):
+        # Current Antigravity read_file: {"Path", "StartLine", "EndLine", "ByteOffset"}.
+        call = {"name": "read_file", "args": {"Path": SKILL, "StartLine": 1, "EndLine": 80}}
+        rec = detect({"toolCall": call, "session_id": "s1"}, no_names)
+        self.assertEqual((rec["skill"], rec["source"]), ("graphify", "agent-read"))
+        for cont in ({"StartLine": 81}, {"ByteOffset": 46080}):
+            call = {"name": "read_file", "args": {"Path": SKILL, **cont}}
+            self.assertIsNone(detect({"toolCall": call}, no_names))
+
     def test_ignores_reads_that_are_not_skill_files(self):
         self.assertIsNone(detect(tool_event("read_file", filePath=os.path.join("work", "README.md")), no_names))
         self.assertIsNone(detect(tool_event("read_file", filePath=os.path.join("work", "docs", "SKILL.md")), no_names))

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 READ_TOOL_NAMES = {"read_file", "Read", "view", "readFile", "view_file", "read", "file_read", "file_view"}
 SKILL_TOOL_NAMES = {"Skill", "skill", "skill_view", "skill_tool", "load_skill"}
-PATH_KEYS = ("filePath", "file_path", "filepath", "path", "AbsolutePath", "target_file", "TargetFile", "targetFile", "file", "filename", "fileName", "absolute_path", "absolutePath", "relative_path", "relativePath")
+PATH_KEYS = ("filePath", "file_path", "filepath", "path", "Path", "AbsolutePath", "target_file", "TargetFile", "targetFile", "file", "filename", "fileName", "absolute_path", "absolutePath", "relative_path", "relativePath")
 SKILL_NAME_KEYS = ("skill", "name", "skill_name", "skillName")
 _EXCLUDED_PARTS = {".archive", ".curator_backups", ".hub"}
 
@@ -181,7 +181,7 @@ def _is_paginated_continuation(data: dict) -> bool:
                 return True
         except (TypeError, ValueError):
             pass
-    for key in ("offset", "ContentOffset", "contentOffset", "content_offset", "byte_offset", "byteOffset"):
+    for key in ("offset", "ContentOffset", "contentOffset", "content_offset", "byte_offset", "byteOffset", "ByteOffset"):
         raw = data.get(key)
         if raw is None:
             continue
