@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-from tracker import inventory, report
+import re
+from pathlib import Path
+
+from tracker import followthrough, inventory, quality, report
 
 DASHBOARD_AGENTS = ("all",) + inventory.ALL_AGENTS
+_SKILL_MD_RE = re.compile(r"skill\.md", re.IGNORECASE)
+
+
+def _sanitize_detail(text: str) -> str:
+    return _SKILL_MD_RE.sub("skill file", str(text))
 
 
 def _format_eval_payload(row: report.Row) -> dict | None:
@@ -19,8 +27,95 @@ def _format_eval_payload(row: report.Row) -> dict | None:
     }
 
 
-def _range_data(summary):
+def _quality_entry(name: str, q_map) -> dict:
+    raw = None
+    if q_map:
+        raw = q_map.get(name)
+        if raw is None:
+            raw = q_map.get(name.lower())
+    if raw is None:
+        return {
+            "scanned": False,
+            "ok": True,
+            "status": "unscanned",
+            "warningCount": 0,
+            "infoCount": 0,
+            "issueCodes": [],
+            "issues": [],
+        }
+    issues = [
+        {
+            "code": str(iss.get("code", "")),
+            "severity": str(iss.get("severity", "info")),
+            "detail": _sanitize_detail(iss.get("detail", "")),
+        }
+        for iss in raw.get("issues", [])
+    ]
+    warning_count = int(raw.get("warningCount", 0))
+    info_count = int(raw.get("infoCount", 0))
+    status = str(raw.get("status") or ("warning" if warning_count else ("info" if info_count else "clean")))
+    return {
+        "scanned": True,
+        "ok": bool(raw.get("ok", warning_count == 0)),
+        "status": status,
+        "warningCount": warning_count,
+        "infoCount": info_count,
+        "issueCodes": [iss["code"] for iss in issues if iss["code"]],
+        "issues": issues,
+    }
+
+
+def _follow_entry(
+    name: str,
+    ft_lookup: dict[str, followthrough.SkillFollow] | None,
+    min_sessions: int,
+    low_rate: float,
+) -> dict:
+    if ft_lookup is None:
+        return {
+            "sessionsLoaded": 0,
+            "sessionsScored": 0,
+            "sessionsFollowed": 0,
+            "rate": None,
+            "readReference": 0,
+            "ranScript": 0,
+            "status": "unavailable",
+            "low": False,
+        }
+    ft_row = ft_lookup.get(name.lower())
+    if ft_row is None:
+        return {
+            "sessionsLoaded": 0,
+            "sessionsScored": 0,
+            "sessionsFollowed": 0,
+            "rate": None,
+            "readReference": 0,
+            "ranScript": 0,
+            "status": "not-loaded",
+            "low": False,
+        }
+    st = followthrough.row_status(ft_row, min_sessions=min_sessions, low_rate=low_rate)
+    return {
+        "sessionsLoaded": ft_row.sessions_loaded,
+        "sessionsScored": ft_row.sessions_scored,
+        "sessionsFollowed": ft_row.sessions_followed,
+        "rate": round(ft_row.rate, 4) if ft_row.rate is not None else None,
+        "readReference": ft_row.kinds.get("reference", 0),
+        "ranScript": ft_row.kinds.get("script", 0),
+        "status": st,
+        "low": st == "low-followthrough",
+    }
+
+
+def _range_data(
+    summary,
+    q_map=None,
+    ft_rows=None,
+    min_follow_sessions: int = followthrough.DEFAULT_MIN_SESSIONS,
+    low_follow_rate: float = followthrough.DEFAULT_LOW_RATE,
+):
     enough = report.meets_threshold(summary, 30, 20)
+    ft_lookup = {r.name.lower(): r for r in ft_rows} if ft_rows is not None else None
     skills = []
     unmatched = []
     eval_scores = []
@@ -34,6 +129,9 @@ def _range_data(summary):
                     eval_scores.append(float(ev_payload["score"]))
                 if ev_payload["delta"] is not None:
                     eval_deltas.append(float(ev_payload["delta"]))
+            q_info = _quality_entry(row.name, q_map)
+            ft_info = _follow_entry(row.name, ft_lookup, min_follow_sessions, low_follow_rate)
+            needs_attention = (q_info["warningCount"] > 0) or ft_info["low"]
             skills.append(
                 {
                     "name": row.name,
@@ -48,6 +146,9 @@ def _range_data(summary):
                     "observed": row.total > 0,
                     "eval": ev_payload,
                     "usefulness": report.usefulness_label(row, enough),
+                    "quality": q_info,
+                    "followthrough": ft_info,
+                    "needsAttention": needs_attention,
                 }
             )
         elif row.total:
@@ -73,19 +174,102 @@ def _range_data(summary):
             "avgScore": round(sum(eval_scores) / len(eval_scores), 4) if eval_scores else None,
             "avgBenefitDelta": round(sum(eval_deltas) / len(eval_deltas), 4) if eval_deltas else None,
         },
+        "qualitySummary": {
+            "auditedSkills": sum(1 for skill in skills if skill["quality"]["scanned"]),
+            "cleanSkills": sum(
+                1 for skill in skills if skill["quality"]["scanned"] and skill["quality"]["status"] == "clean"
+            ),
+            "warningSkills": sum(1 for skill in skills if skill["quality"]["warningCount"] > 0),
+            "infoOnlySkills": sum(
+                1
+                for skill in skills
+                if skill["quality"]["warningCount"] == 0 and skill["quality"]["infoCount"] > 0
+            ),
+            "scoredFollowSkills": sum(1 for skill in skills if skill["followthrough"]["sessionsScored"] > 0),
+            "lowFollowSkills": sum(1 for skill in skills if skill["followthrough"]["low"]),
+            "needsAttentionSkills": sum(1 for skill in skills if skill["needsAttention"]),
+        },
         "skills": skills,
         "unmatched": unmatched,
     }
 
 
-def build_dashboard_data(events, copies, now, evals: list[dict] | None = None):
+def _normalize_quality_map(value):
+    if value is None:
+        return {}
+    if isinstance(value, quality.QualitySummary):
+        return {
+            row.name: {
+                "ok": row.ok,
+                "status": row.status,
+                "warningCount": row.warning_count,
+                "infoCount": row.info_count,
+                "issues": [iss.to_dict() for iss in row.issues],
+            }
+            for row in value.rows
+        }
+    return value
+
+
+def build_dashboard_data(
+    events,
+    copies,
+    now,
+    sessions=None,
+    evals: list[dict] | None = None,
+    *,
+    follow_by_agent=None,
+    quality_by_agent=None,
+    min_follow_sessions: int = followthrough.DEFAULT_MIN_SESSIONS,
+    low_follow_rate: float = followthrough.DEFAULT_LOW_RATE,
+):
+    session_list = list(sessions) if sessions is not None else None
+    all_disk_copies = [c for c in copies if inventory._is_file(Path(c.path))]
+    all_q_map = quality.quality_map(all_disk_copies) if (quality_by_agent is None and all_disk_copies) else {}
+
     agents_data = {}
     for ag in DASHBOARD_AGENTS:
+        ag_copies = copies if ag == "all" else [c for c in copies if ag in getattr(c, "agents", ("copilot",))]
         recent = report.summarize(events, copies, now, 30, agent=ag, evals=evals)
         history = report.summarize_all(events, copies, now, agent=ag, evals=evals)
+
+        if quality_by_agent is not None:
+            if isinstance(quality_by_agent, dict) and any(k in quality_by_agent for k in DASHBOARD_AGENTS):
+                q_map = _normalize_quality_map(
+                    quality_by_agent.get(ag) or (quality_by_agent.get("all") if ag == "all" else {})
+                )
+            else:
+                base_q = _normalize_quality_map(quality_by_agent)
+                allowed = {c.name.lower() for c in ag_copies}
+                q_map = {k: v for k, v in base_q.items() if k.lower() in allowed}
+        else:
+            ag_disk = [c for c in ag_copies if inventory._is_file(Path(c.path))]
+            if not ag_disk:
+                q_map = {}
+            elif len(ag_disk) == len(all_disk_copies):
+                q_map = all_q_map
+            else:
+                q_map = quality.quality_map(ag_disk)
+
+        if follow_by_agent is not None:
+            ag_ft = follow_by_agent.get(ag) or {}
+            ft_recent = ag_ft.get("30d", [])
+            ft_history = ag_ft.get("all", [])
+        elif session_list is not None:
+            if ag == "all" or ag in followthrough.FOLLOW_AGENTS:
+                ft_agent = None if ag == "all" else ag
+                ft_recent = followthrough.analyze(session_list, ag_copies, now, 30, agent=ft_agent)
+                ft_history = followthrough.analyze(session_list, ag_copies, now, None, agent=ft_agent)
+            else:
+                ft_recent = []
+                ft_history = []
+        else:
+            ft_recent = None
+            ft_history = None
+
         agents_data[ag] = {
-            "30d": _range_data(recent),
-            "all": _range_data(history),
+            "30d": _range_data(recent, q_map, ft_recent, min_follow_sessions, low_follow_rate),
+            "all": _range_data(history, q_map, ft_history, min_follow_sessions, low_follow_rate),
         }
     return {
         "ranges": agents_data["all"],
@@ -100,25 +284,26 @@ _HTML_PREFIX = '''<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Copilot Skill Usage Dashboard</title>
 <style>
-:root{color-scheme:light;--ink:#1c2434;--muted:#647087;--line:#dce2eb;--paper:#fff;--wash:#f4f6fa;--blue:#3268c8;--green:#3c9275;--gold:#d7952b;--shadow:0 14px 40px #24354d12}
+:root{color-scheme:light;--ink:#1c2434;--muted:#647087;--line:#dce2eb;--paper:#fff;--wash:#f4f6fa;--blue:#3268c8;--green:#3c9275;--gold:#d7952b;--amber-bg:#fef3dc;--amber-ink:#93560e;--info-bg:#eaf0fc;--info-ink:#174b9f;--shadow:0 14px 40px #24354d12}
 *{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1240px;margin:0 auto;padding:42px 28px 64px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:750;color:var(--blue)}
+main{max-width:1320px;margin:0 auto;padding:42px 28px 64px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:750;color:var(--blue)}
 h1{margin:6px 0 4px;font-size:clamp(28px,4vw,42px);letter-spacing:-.04em}.lede{margin:0;color:var(--muted)}
 .toolbar{display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:space-between;margin:28px 0 18px}.control-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.control-label{font-size:12px;font-weight:700;color:var(--muted);margin-right:5px}
 button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:9px;padding:8px 12px;cursor:pointer}button:hover{border-color:var(--blue)}button[aria-pressed="true"]{background:#eaf0fc;border-color:#9bb5e7;color:#174b9f;font-weight:700}button:focus-visible{outline:3px solid #7aa5ef;outline-offset:2px}
 .cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:18px 0 24px}.card,.panel{background:var(--paper);border:1px solid var(--line);border-radius:15px;box-shadow:var(--shadow)}.card{padding:18px 20px}.card span{display:block;color:var(--muted);font-size:13px}.card strong{display:block;margin-top:3px;font-size:29px;letter-spacing:-.03em}
+.signal-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:12px}.signal-stat{padding:12px 14px;border:1px solid var(--line);border-radius:11px;background:var(--wash)}.signal-stat span{display:block;color:var(--muted);font-size:12px}.signal-stat strong{display:block;margin-top:2px;font-size:22px;letter-spacing:-.02em}
 .panel{padding:22px;margin:16px 0}.panel h2{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}.panel-intro{margin:0 0 16px;color:var(--muted);font-size:13px}
 .legend{display:flex;flex-wrap:wrap;gap:14px;margin:13px 0 17px;color:var(--muted);font-size:12px}.legend span{display:inline-flex;align-items:center;gap:6px}.swatch{width:10px;height:10px;border-radius:3px;display:inline-block}.agent-read{background:var(--blue)}.user-slash{background:var(--green)}.skill-tool{background:var(--gold)}
 .chart{display:grid;gap:11px}.chart-row{display:grid;grid-template-columns:minmax(120px,220px) 1fr 74px;gap:12px;align-items:center}.chart-name{overflow-wrap:anywhere;font-size:13px;font-weight:650}.bar-track{height:15px;background:#edf0f5;border-radius:99px;display:flex;overflow:hidden}.bar-segment{height:100%;min-width:0}.bar-total{text-align:right;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.zero-label{color:var(--muted);font-size:12px}
-.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:980px;font-size:13px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);white-space:nowrap}td.num{font-variant-numeric:tabular-nums;text-align:right}.status{display:inline-block;padding:2px 8px;border-radius:999px;background:#edf1f7;font-size:11px;font-weight:700;white-space:nowrap}.status.observed,.status.high-value{background:#e6f4ef;color:#246b55}.status.under-triggered{background:#eaf0fc;color:#174b9f}.status.low-benefit{background:#fdecea;color:#9b2c2c}.source-tags{color:var(--muted);overflow-wrap:anywhere}.empty{padding:12px 14px;background:#f2f5fa;border-radius:9px;color:var(--muted);font-size:13px}.note{color:var(--muted);font-size:13px}.unmatched-table{min-width:580px}.footer{color:var(--muted);font-size:12px;margin-top:22px}
-@media(max-width:760px){main{padding:28px 16px 44px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-row{grid-template-columns:minmax(90px,150px) 1fr 58px;gap:8px}.panel{padding:17px}}
-@media(max-width:420px){.cards{gap:8px}.card{padding:13px}.card strong{font-size:24px}.chart-row{grid-template-columns:1fr 54px}.chart-name{grid-column:1/-1}}
+.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:1180px;font-size:13px}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);white-space:nowrap}td.num{font-variant-numeric:tabular-nums;text-align:right}.status{display:inline-block;padding:2px 8px;border-radius:999px;background:#edf1f7;font-size:11px;font-weight:700;white-space:nowrap}.status.observed,.status.loaded,.status.clean,.status.high-value{background:#e6f4ef;color:#246b55}.status.warning{background:var(--amber-bg);color:var(--amber-ink)}.status.info,.status.under-triggered{background:var(--info-bg);color:var(--info-ink)}.status.low-benefit{background:#fdecea;color:#9b2c2c}.issue-codes{margin-top:4px;font-size:11px;color:var(--muted);overflow-wrap:anywhere}.source-tags{color:var(--muted);overflow-wrap:anywhere}.empty{padding:12px 14px;background:#f2f5fa;border-radius:9px;color:var(--muted);font-size:13px}.note{color:var(--muted);font-size:13px}.unmatched-table{min-width:580px}.footer{color:var(--muted);font-size:12px;margin-top:22px}
+@media(max-width:760px){main{padding:28px 16px 44px}.cards,.signal-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-row{grid-template-columns:minmax(90px,150px) 1fr 58px;gap:8px}.panel{padding:17px}}
+@media(max-width:420px){.cards,.signal-grid{gap:8px}.card{padding:13px}.card strong{font-size:24px}.chart-row{grid-template-columns:1fr 54px}.chart-name{grid-column:1/-1}}
 </style>
 </head>
 <body>
 <main>
 <header><div class="eyebrow">Local snapshot</div><h1>Copilot Skill Usage</h1>
-<p class="lede">Observed skill-load metadata and evaluation scores alongside the inventory scanned when this dashboard was generated.</p></header>
+<p class="lede">Observed skill-load metadata, support-file follow-through, static quality checks, and evaluation scores alongside the inventory scanned when this dashboard was generated.</p></header>
 <div class="toolbar">
 <div class="control-group" id="agent-control" role="group" aria-label="Agent">
 <span class="control-label">Agent</span><button type="button" data-agent="all" aria-pressed="true">All agents</button><button type="button" data-agent="copilot" aria-pressed="false">Copilot</button><button type="button" data-agent="claude" aria-pressed="false">Claude</button><button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button><button type="button" data-agent="pi" aria-pressed="false">Pi Agent</button><button type="button" data-agent="hermes" aria-pressed="false">Hermes Agent</button><button type="button" data-agent="codex" aria-pressed="false">Codex</button>
@@ -127,16 +312,18 @@ button{font:inherit;color:var(--ink);background:var(--paper);border:1px solid va
 <span class="control-label">Time range</span><button type="button" data-range="30d" aria-pressed="true">Last 30 days</button><button type="button" data-range="all" aria-pressed="false">All recorded history</button>
 </div>
 <div class="control-group" id="filter-control" role="group" aria-label="Skill filter">
-<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="evaluated" aria-pressed="false">Evaluated</button><button type="button" data-filter="non-builtin" aria-pressed="false">Exclude built-in</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
+<span class="control-label">Show</span><button type="button" data-filter="all" aria-pressed="true">All skills</button><button type="button" data-filter="observed" aria-pressed="false">Observed</button><button type="button" data-filter="not-observed" aria-pressed="false">Not observed</button><button type="button" data-filter="needs-attention" aria-pressed="false">Needs attention</button><button type="button" data-filter="evaluated" aria-pressed="false">Evaluated</button><button type="button" data-filter="non-builtin" aria-pressed="false">Exclude built-in</button><button type="button" data-filter="unmatched" aria-pressed="false">Unmatched loads</button>
 </div></div>
 <section class="cards" aria-label="Summary">
 <div class="card"><span>Installed skills</span><strong id="installed-count">0</strong></div><div class="card"><span>Recorded loads</span><strong id="load-count">0</strong></div><div class="card"><span>Observed skills</span><strong id="observed-count">0</strong></div><div class="card"><span>Not observed</span><strong id="not-observed-count">0</strong></div></section>
+<section id="quality-summary-panel" class="panel" aria-label="Quality and follow-through signals"><h2>Quality &amp; follow-through signals</h2><p class="panel-intro">Static hygiene findings and post-load support-file follow-through (&lt; 30% across &gt;= 5 scored sessions) are review signals rather than task-outcome verdicts.</p>
+<div class="signal-grid"><div class="signal-stat"><span>Needs attention</span><strong id="needs-attention-count">0</strong></div><div class="signal-stat"><span>Quality warnings</span><strong id="quality-warning-count">0</strong></div><div class="signal-stat"><span>Clean skills</span><strong id="quality-clean-count">0</strong></div><div class="signal-stat"><span>Low follow-through</span><strong id="low-followthrough-count">0</strong></div></div></section>
 <p id="empty-events" class="empty" hidden>No valid load events are recorded in this range.</p>
 <p id="empty-inventory" class="empty" hidden>No skills were found in the current inventory. Unmatched recorded loads may still be listed below.</p>
 <section class="panel"><h2>Loads by skill</h2><p class="panel-intro">Each bar is split by load source. Every current inventory skill is included, including zero-load skills.</p>
 <div class="legend" aria-label="Load source legend"><span><i class="swatch agent-read"></i>Agent read</span><span><i class="swatch user-slash"></i>User slash</span><span><i class="swatch skill-tool"></i>Skill tool</span></div><div id="chart" class="chart"></div><p id="empty-filtered-chart" class="empty" hidden>No inventoried skills match this filter.</p></section>
-<section class="panel"><h2>Skill details</h2><p class="panel-intro">Not observed means no loads were recorded in the selected range; eval scores show with-skill pass rate and lift over baseline.</p>
-<div class="table-scroll"><table><thead><tr><th>Skill</th><th>Copies</th><th>Inventory sources</th><th>Agent read</th><th>User slash</th><th>Skill tool</th><th>Total</th><th>Sessions</th><th>Last load</th><th>Eval score</th><th>Benefit</th><th>Status</th></tr></thead><tbody id="skills-table"></tbody></table></div><p id="empty-filtered-table" class="empty" hidden>No inventoried skills match this filter.</p></section>
+<section class="panel"><h2>Skill details</h2><p class="panel-intro">Not observed means no loads were recorded in the selected range; it does not mean a skill is unnecessary. Eval scores show with-skill pass rate and lift over baseline.</p>
+<div class="table-scroll"><table><thead><tr><th>Skill</th><th>Copies</th><th>Inventory sources</th><th>Agent read</th><th>User slash</th><th>Skill tool</th><th>Total</th><th>Sessions</th><th>Last load</th><th>Follow-through</th><th>Quality</th><th>Eval score</th><th>Benefit</th><th>Status</th></tr></thead><tbody id="skills-table"></tbody></table></div><p id="empty-filtered-table" class="empty" hidden>No inventoried skills match this filter.</p></section>
 <section id="unmatched-section" class="panel"><h2>Unmatched loads</h2><p class="panel-intro">An unmatched name has no current inventory match. It may have been removed, renamed, or be outside scanned locations; historical inventory snapshots are not retained, so the cause is unknown.</p>
 <div class="table-scroll"><table class="unmatched-table"><thead><tr><th>Recorded skill name</th><th>Loads</th><th>Load sources</th><th>Last seen</th></tr></thead><tbody id="unmatched-table"></tbody></table></div><p id="empty-unmatched" class="empty" hidden>No unmatched loads in this range.</p></section>
 <p class="footer">This file is a generated snapshot. It contains skill names and aggregate usage metadata only. No data is uploaded or refreshed automatically.</p>
@@ -175,19 +362,64 @@ function fmtDelta(val) {
     return (pct >= 0 ? "+" : "") + pct + "%";
 }
 
+function followCell(row, ft) {
+    const td = element("td");
+    if (ft && ft.sessionsScored > 0 && ft.rate !== null && ft.rate !== undefined) {
+        const label = Math.round(ft.rate * 100) + "% (" + ft.sessionsFollowed + "/" + ft.sessionsScored + ")";
+        if (ft.low) {
+            const badge = element("span", "status warning", label);
+            badge.title = "Low follow-through (< 30% across >= 5 scored sessions)";
+            td.appendChild(badge);
+        } else {
+            td.textContent = label;
+        }
+    } else {
+        td.textContent = "—";
+    }
+    row.appendChild(td);
+}
+
+function qualityCell(row, q) {
+    const td = element("td");
+    if (!q || !q.scanned) {
+        td.textContent = "—";
+    } else if (q.warningCount > 0) {
+        const label = q.warningCount === 1 ? "1 warning" : q.warningCount + " warnings";
+        td.appendChild(element("span", "status warning", label));
+        if (q.issueCodes && q.issueCodes.length) {
+            td.appendChild(element("div", "issue-codes", q.issueCodes.join(", ")));
+        }
+    } else if (q.infoCount > 0) {
+        const label = q.infoCount === 1 ? "1 info" : q.infoCount + " infos";
+        td.appendChild(element("span", "status info", label));
+        if (q.issueCodes && q.issueCodes.length) {
+            td.appendChild(element("div", "issue-codes", q.issueCodes.join(", ")));
+        }
+    } else {
+        td.appendChild(element("span", "status clean", "Clean"));
+    }
+    row.appendChild(td);
+}
+
 function render() {
     const agentRanges = (dashboardData.agents && dashboardData.agents[selectedAgent]) || dashboardData.ranges;
     const view = agentRanges[selectedRange];
     const summary = view.summary;
+    const qSummary = view.qualitySummary || {needsAttentionSkills: 0, warningSkills: 0, cleanSkills: 0, lowFollowSkills: 0};
     document.getElementById("installed-count").textContent = summary.installedSkills;
     document.getElementById("load-count").textContent = summary.recordedLoads;
     document.getElementById("observed-count").textContent = summary.observedSkills;
     document.getElementById("not-observed-count").textContent = summary.notObservedSkills;
+    document.getElementById("needs-attention-count").textContent = qSummary.needsAttentionSkills;
+    document.getElementById("quality-warning-count").textContent = qSummary.warningSkills;
+    document.getElementById("quality-clean-count").textContent = qSummary.cleanSkills;
+    document.getElementById("low-followthrough-count").textContent = qSummary.lowFollowSkills;
     document.getElementById("empty-events").hidden = summary.recordedLoads > 0;
     document.getElementById("empty-inventory").hidden = summary.installedSkills > 0;
 
     const skills = selectedFilter === "observed" ? view.skills.filter(skill => skill.observed)
         : selectedFilter === "not-observed" ? view.skills.filter(skill => !skill.observed)
+        : selectedFilter === "needs-attention" ? view.skills.filter(skill => skill.needsAttention)
         : selectedFilter === "evaluated" ? view.skills.filter(skill => skill.eval !== null && skill.eval !== undefined)
         : selectedFilter === "non-builtin" ? view.skills.filter(skill => !skill.sources.every(s => s.startsWith("builtin:")))
         : selectedFilter === "unmatched" ? [] : view.skills;
@@ -223,13 +455,15 @@ function render() {
         cell(tr, skill.total, "num");
         cell(tr, skill.sessions, "num");
         cell(tr, skill.last ? skill.last.slice(0, 10) : "—");
+        followCell(tr, skill.followthrough);
+        qualityCell(tr, skill.quality);
         const ev = skill.eval;
         cell(tr, ev ? fmtPct(ev.score) : "—", "num");
         cell(tr, ev ? fmtDelta(ev.delta) : "—", "num");
         const status = element("td");
         const label = skill.usefulness || (skill.observed ? "observed" : "not-observed");
         const badgeText = label === "observed" ? "Observed" : label === "not-observed" ? "Not observed" : label;
-        const badgeClass = label === "observed" || label === "high-value" ? "status " + label
+        const badgeClass = label === "observed" || label === "loaded" || label === "high-value" ? "status " + label
             : label === "under-triggered" || label === "low-benefit" ? "status " + label
             : "status";
         status.appendChild(element("span", badgeClass, badgeText));

@@ -1,5 +1,7 @@
 import contextlib
+import csv
 import io
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -143,6 +145,197 @@ class CliTests(unittest.TestCase):
                 )
             self.assertEqual(code, 1)
             self.assertIn("error: could not write CSV to", stderr.getvalue())
+
+    def test_followthrough_prints_report_and_writes_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            ws = root / "workspace"
+            skill_dir = ws / ".agents" / "skills" / "deploy-helper"
+            (skill_dir / "scripts").mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: deploy-helper\ndescription: Use when running deployment checks with scripts/verify.py.\n---\nRun scripts/verify.py.\n",
+                encoding="utf-8",
+            )
+            (skill_dir / "scripts" / "verify.py").write_text("print('ok')\n", encoding="utf-8")
+
+            transcript = home / ".gemini" / "antigravity" / "brain" / "conv-1" / ".system_generated" / "logs" / "transcript.jsonl"
+            transcript.parent.mkdir(parents=True)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            steps = [
+                {
+                    "type": "PLANNER_RESPONSE",
+                    "created_at": now_iso,
+                    "tool_calls": [
+                        {"name": "read_file", "args": {"Path": str(skill_dir / "SKILL.md")}},
+                        {"name": "run_command", "args": {"CommandLine": f"python3 {skill_dir / 'scripts' / 'verify.py'}"}},
+                    ],
+                }
+            ]
+            transcript.write_text("\n".join(json.dumps(s) for s in steps) + "\n", encoding="utf-8")
+
+            csv_path = root / "nested" / "ft" / "followthrough.csv"
+            out = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(out):
+                code = skill_usage.main(
+                    [
+                        "followthrough",
+                        "--days",
+                        "30",
+                        "--workspace",
+                        str(ws),
+                        "--agent",
+                        "antigravity",
+                        "--csv",
+                        str(csv_path),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            rendered = out.getvalue()
+            self.assertIn("# Skill follow-through report", rendered)
+            self.assertIn("deploy-helper", rendered)
+            self.assertNotIn(str(root), rendered)
+            self.assertTrue(csv_path.is_file())
+            with open(csv_path, encoding="utf-8", newline="") as fh:
+                rows = list(csv.DictReader(fh))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["skill"], "deploy-helper")
+            self.assertEqual(rows[0]["sessions_scored"], "1")
+            self.assertEqual(rows[0]["sessions_followed"], "1")
+
+    def test_followthrough_csv_reports_write_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            blocker = root / "blocker"
+            blocker.write_text("file", encoding="utf-8")
+            csv_path = blocker / "ft.csv"
+            out = io.StringIO()
+            err = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(
+                out
+            ), contextlib.redirect_stderr(err):
+                code = skill_usage.main(["followthrough", "--workspace", str(root), "--csv", str(csv_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("error: could not write CSV to", err.getvalue())
+
+    def test_audit_prints_markdown_supports_issues_only_and_writes_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            ws = root / "workspace"
+            clean_dir = ws / ".agents" / "skills" / "clean-skill"
+            clean_dir.mkdir(parents=True)
+            (clean_dir / "SKILL.md").write_text(
+                "---\nname: clean-skill\ndescription: Use when validating static skill quality checks across local workspaces.\n---\n# Clean Skill\n",
+                encoding="utf-8",
+            )
+            broken_dir = ws / ".agents" / "skills" / "broken-skill"
+            broken_dir.mkdir(parents=True)
+            (broken_dir / "SKILL.md").write_text(
+                "---\nname: broken-skill\n---\nSee [missing guide](references/missing.md).\n",
+                encoding="utf-8",
+            )
+
+            csv_path = root / "nested" / "audit" / "quality.csv"
+            full_out = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(full_out):
+                code = skill_usage.main(["audit", "--workspace", str(ws), "--csv", str(csv_path)])
+
+            self.assertEqual(code, 0)
+            full_md = full_out.getvalue()
+            self.assertIn("# Skill quality audit report", full_md)
+            self.assertIn("broken-skill", full_md)
+            self.assertIn("missing-description", full_md)
+            self.assertIn("broken-link", full_md)
+            self.assertIn("clean-skill", full_md)
+            self.assertNotIn(str(root), full_md)
+            self.assertTrue(csv_path.is_file())
+            with open(csv_path, encoding="utf-8", newline="") as fh:
+                rows = {r["skill"]: r for r in csv.DictReader(fh)}
+            self.assertEqual(rows["broken-skill"]["status"], "warning")
+            self.assertEqual(rows["clean-skill"]["status"], "clean")
+
+            issues_out = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(issues_out):
+                code_issues = skill_usage.main(["audit", "--workspace", str(ws), "--issues-only"])
+            self.assertEqual(code_issues, 0)
+            issues_md = issues_out.getvalue()
+            self.assertIn("broken-skill", issues_md)
+            self.assertNotIn("## Clean skills", issues_md)
+            self.assertNotIn("clean-skill", issues_md)
+
+    def test_audit_csv_reports_write_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            blocker = root / "blocker"
+            blocker.write_text("file", encoding="utf-8")
+            csv_path = blocker / "audit.csv"
+            out = io.StringIO()
+            err = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(
+                out
+            ), contextlib.redirect_stderr(err):
+                code = skill_usage.main(["audit", "--workspace", str(root), "--csv", str(csv_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("error: could not write CSV to", err.getvalue())
+
+    def test_dashboard_cli_embeds_quality_and_followthrough_without_leaking_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            ws = root / "workspace"
+            skill_dir = ws / ".agents" / "skills" / "needs-help"
+            (skill_dir / "references").mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("no frontmatter here\n", encoding="utf-8")
+            (skill_dir / "references" / "doc.md").write_text("guide\n", encoding="utf-8")
+
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for idx in range(5):
+                tpath = (
+                    home
+                    / ".gemini"
+                    / "antigravity"
+                    / "brain"
+                    / f"conv-{idx}"
+                    / ".system_generated"
+                    / "logs"
+                    / "transcript.jsonl"
+                )
+                tpath.parent.mkdir(parents=True)
+                step = {
+                    "type": "PLANNER_RESPONSE",
+                    "created_at": now_iso,
+                    "tool_calls": [{"name": "read_file", "args": {"Path": str(skill_dir / "SKILL.md")}}],
+                }
+                tpath.write_text(json.dumps(step) + "\n", encoding="utf-8")
+
+            data_dir = root / "events"
+            output = root / "dashboard.html"
+            out = io.StringIO()
+            with patch("skill_usage.Path.home", return_value=home), contextlib.redirect_stdout(out):
+                code = skill_usage.main(
+                    [
+                        "dashboard",
+                        "--no-sync",
+                        "--data-dir",
+                        str(data_dir),
+                        "--workspace",
+                        str(ws),
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            html = output.read_text(encoding="utf-8")
+            self.assertIn('data-filter="needs-attention"', html)
+            self.assertIn("missing-frontmatter", html)
+            self.assertIn("low-followthrough", html)
+            self.assertNotIn(str(root), html)
+            self.assertNotIn("SKILL.md", html)
 
 
 if __name__ == "__main__":

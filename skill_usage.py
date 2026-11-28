@@ -4,10 +4,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tracker import dashboard, evals, inventory, report, store, sync
+from tracker import dashboard, evals, followthrough, inventory, quality, report, store, sync
 
 AGENT_CHOICES = ("all",) + inventory.ALL_AGENTS
 SYNC_AGENT_CHOICES = ("all",) + sync.SYNC_AGENTS
+FOLLOW_AGENT_CHOICES = ("all",) + followthrough.FOLLOW_AGENTS
 
 
 def _maybe_sync(args, home: Path, workspaces: list[Path]) -> None:
@@ -19,6 +20,17 @@ def _maybe_sync(args, home: Path, workspaces: list[Path]) -> None:
         return
     agents = (agent_arg,) if agent_arg in sync.SYNC_AGENTS else None
     sync.sync_events(data_dir=args.data_dir, home=home, workspaces=workspaces, agents=agents)
+
+
+def _write_csv(csv_path: Path, writer_fn) -> bool:
+    try:
+        if hasattr(csv_path, "parent") and csv_path.parent:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+        writer_fn(csv_path)
+        return True
+    except OSError as exc:
+        print(f"error: could not write CSV to {csv_path}: {exc}", file=sys.stderr)
+        return False
 
 
 def _handle_eval(args, home: Path) -> int:
@@ -190,6 +202,20 @@ def main(argv=None):
     syn.add_argument("--data-dir", type=Path)
     syn.add_argument("--agent", choices=SYNC_AGENT_CHOICES, default="all", help="sync only a specific agent")
 
+    fol = sub.add_parser("followthrough", help="check whether agents use a skill's own files after loading it")
+    fol.add_argument("--days", type=int, help="only sessions started in the last N days (default: all history)")
+    fol.add_argument("--min-sessions", type=int, default=followthrough.DEFAULT_MIN_SESSIONS)
+    fol.add_argument("--low-rate", type=float, default=followthrough.DEFAULT_LOW_RATE)
+    fol.add_argument("--workspace", action="append", default=[], type=Path)
+    fol.add_argument("--agent", choices=FOLLOW_AGENT_CHOICES, default="all", help="filter follow-through analysis to a specific agent")
+    fol.add_argument("--csv", type=Path, help="write follow-through summary to CSV")
+
+    aud = sub.add_parser("audit", help="audit static quality of installed skills")
+    aud.add_argument("--workspace", action="append", default=[], type=Path)
+    aud.add_argument("--agent", choices=AGENT_CHOICES, default="all", help="filter audit to a specific agent")
+    aud.add_argument("--issues-only", action="store_true", help="show only skills with warnings or info findings")
+    aud.add_argument("--csv", type=Path, help="write quality audit summary to CSV")
+
     inst = sub.add_parser("install-hooks", help="install live usage-tracking hooks/extensions for local agents")
     inst.add_argument("--agent", choices=SYNC_AGENT_CHOICES, default="all", help="install hook for a specific agent")
 
@@ -235,6 +261,29 @@ def main(argv=None):
         print(f"Synced {counts['total']} new events ({', '.join(parts)})")
         return 0
 
+    if args.command == "followthrough":
+        workspaces = args.workspace or [Path.cwd()]
+        agent = args.agent if args.agent != "all" else None
+        copies = inventory.scan(home, workspaces, agent=agent)
+        sessions = list(followthrough.collect_sessions(home, agent))
+        rows = followthrough.analyze(sessions, copies, datetime.now(timezone.utc), args.days, agent)
+        print(followthrough.render(rows, args.min_sessions, args.low_rate, args.days))
+        if args.csv and not _write_csv(
+            args.csv, lambda p: followthrough.write_csv(rows, p, args.min_sessions, args.low_rate)
+        ):
+            return 1
+        return 0
+
+    if args.command == "audit":
+        workspaces = args.workspace or [Path.cwd()]
+        agent = args.agent if args.agent != "all" else None
+        copies = inventory.scan(home, workspaces, agent=agent)
+        summary = quality.audit(copies)
+        print(quality.render(summary, issues_only=args.issues_only))
+        if args.csv and not _write_csv(args.csv, lambda p: quality.write_csv(summary, p)):
+            return 1
+        return 0
+
     if args.command == "install-hooks":
         agents = (args.agent,) if args.agent != "all" else None
         installed = sync.install_hooks(home=home, agents=agents)
@@ -248,9 +297,13 @@ def main(argv=None):
         _maybe_sync(args, home, workspaces)
         events = store.read_events(args.data_dir)
         eval_records = store.read_evals(args.data_dir)
-        copies = inventory.scan(home, workspaces, agent=args.agent if args.agent != "all" else None)
+        agent_filter = args.agent if args.agent != "all" else None
+        copies = inventory.scan(home, workspaces, agent=agent_filter)
+        sessions = list(followthrough.collect_sessions(home, agent_filter))
         now = datetime.now(timezone.utc)
-        html = dashboard.render_html(dashboard.build_dashboard_data(events, copies, now, evals=eval_records))
+        html = dashboard.render_html(
+            dashboard.build_dashboard_data(events, copies, now, sessions=sessions, evals=eval_records)
+        )
         try:
             output.write_text(html, encoding="utf-8")
         except OSError as exc:
@@ -270,12 +323,7 @@ def main(argv=None):
     print(report.render(summary, args.min_days, args.min_sessions))
     if args.csv:
         enough = report.meets_threshold(summary, args.min_days, args.min_sessions)
-        try:
-            if hasattr(args.csv, "parent") and args.csv.parent:
-                args.csv.parent.mkdir(parents=True, exist_ok=True)
-            report.write_csv(summary, args.csv, enough)
-        except OSError as exc:
-            print(f"error: could not write CSV to {args.csv}: {exc}", file=sys.stderr)
+        if not _write_csv(args.csv, lambda p: report.write_csv(summary, p, enough)):
             return 1
     return 0
 
